@@ -1,10 +1,11 @@
 import requests
 from bs4 import BeautifulSoup
-import time
 from urllib.parse import urljoin
 
 from events.events_manager import create_database
 from store_details import store_details
+from util.express_vpn import select_random_location
+
 
 def get_listing_events(listing_url: str) -> list:
     """
@@ -62,7 +63,7 @@ def main():
             print(f"store details from: {detail_url}")
             store_details(detail_url)
 
-        time.sleep(3)  # Delay between pages
+        select_random_location()
 
     print(f"\nFinished!")
 

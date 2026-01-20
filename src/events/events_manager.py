@@ -15,6 +15,7 @@ class RunningEvent(BaseModel):
     md: str  # full markdown content
     start: str
     url: str
+    organiser: str
 
     class Config:
         populate_by_name = True
@@ -25,40 +26,18 @@ def create_database():
     with sqlite3.connect('events.db') as conn:
         cursor = conn.cursor()
         cursor.execute('''
-                       CREATE TABLE IF NOT EXISTS events
-                       (
-                           id
-                           INTEGER
-                           PRIMARY
-                           KEY
-                           AUTOINCREMENT,
-                           event_name
-                           TEXT
-                           UNIQUE
-                           NOT
-                           NULL,
-                           date
-                           TEXT
-                           NOT
-                           NULL,
-                           event_summary
-                           TEXT
-                           NOT
-                           NULL,
-                           location
-                           TEXT
-                           NOT
-                           NULL,
-                           start
-                           TEXT,
-                           finish
-                           TEXT,
-                           url
-                           TEXT
-                           UNIQUE, -- secondary unique key
-                           md
-                           TEXT
-                       )
+            CREATE TABLE IF NOT EXISTS events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_name    TEXT UNIQUE NOT NULL,
+                date          TEXT NOT NULL,
+                event_summary TEXT NOT NULL,
+                location      TEXT NOT NULL,
+                start         TEXT,
+                finish        TEXT,
+                url           TEXT UNIQUE,          -- secondary unique key
+                md            TEXT,
+                organiser     TEXT
+            )
                        ''')
 
 
@@ -112,8 +91,8 @@ def insert_or_skip_events(events: List[RunningEvent]):
             try:
                 cursor.execute('''
                                INSERT INTO events (event_name, date, event_summary, location,
-                                                   start, finish, url, md)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                                   start, finish, url, md, organiser)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                                ''', (
                                    event.event_name,
                                    event.date,
@@ -122,63 +101,23 @@ def insert_or_skip_events(events: List[RunningEvent]):
                                    event.start,
                                    event.finish,
                                    event.url,
-                                   event.md
+                                   event.md,
+                                   event.organiser,
                                ))
                 print(f"Added: '{event.event_name}'")
             except sqlite3.IntegrityError:
                 print(f"Insertion failed (likely duplicate name/url): '{event.event_name}'")
+            except Exception as e:
+                print(f"Exception: '{e}'")
 
         # commit automatic at end of context
 
 
-def event_from_dict(data: Dict[str, Any]) -> RunningEvent:
+def event_from_dict(data: Dict[str, Any]) -> RunningEvent | None:
     """Convert raw dict to RunningEvent model"""
-    return RunningEvent(**data)
+    try:
+        return RunningEvent(**data)
+    except Exception as e:
+        print(f"Exception: '{e}'")
+        return None
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Example usage
-# ──────────────────────────────────────────────────────────────────────────────
-
-if __name__ == '__main__':
-    create_database()
-
-    # Sample event
-    sample_event = RunningEvent(
-        date="Fri 8th March 2024 - Thu 31st December 2026",
-        event_name="Run the Thames Bridges - 10K",
-        event_summary="Self-guided 10K audio tour running across 11 Thames bridges...",
-        finish="near Vauxhall Station",
-        location="Tower Hill, London, United Kingdom",
-        start="sundial outside Tower Hill Station",
-        url="https://findarace.com/events/run-the-thames-bridges-10k",
-        md="# Run the Thames Bridges - 10K\n\n(full content...)"
-    )
-
-    # Quick existence checks
-    print("Checking existence...")
-    print("By name:", event_exists("Run the Thames Bridges - 10K"))
-    print("By URL: ", event_with_url_exists("https://findarace.com/events/run-the-thames-bridges-10k"))
-    print("By name OR URL:", event_exists_by_name_or_url(
-        "Run the Thames Bridges - 10K",
-        "https://findarace.com/events/run-the-thames-bridges-10k"
-    ))
-
-    # Try to insert (will skip if already present)
-    print("\nTrying to insert sample event:")
-    insert_or_skip_events([sample_event])
-
-    # Another event with same URL but different name → should be skipped
-    duplicate_url_event = RunningEvent(
-        date="Some date",
-        event_name="Different Name Same URL",
-        event_summary="Test duplicate url",
-        finish="Somewhere",
-        location="London",
-        start="Start",
-        url="https://findarace.com/events/run-the-thames-bridges-10k",  # same url!
-        md="Test md"
-    )
-
-    print("\nTrying duplicate URL event:")
-    insert_or_skip_events([duplicate_url_event])

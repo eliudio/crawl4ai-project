@@ -40,6 +40,10 @@ def get_details_with_grok(url: str, markdown: str) -> Dict[str, Any]:
                 "type": "string",
                 "description": "Rephrased, summary of the description or summary available"
             },
+            "organiser": {
+                "type": "string",
+                "description": "The organiser organising the event"
+            },
             "finish": {
                 "type": "string",
                 "description": "Location where the race finishes, if provided"
@@ -114,5 +118,6 @@ def store_details(url:str)-> None:
         details = get_details_with_grok(url, md)
         print(json.dumps(details, indent=2))
         event_from_json = event_from_dict(details)
-        insert_or_skip_events([event_from_json])
+        if event_from_json is not None:
+            insert_or_skip_events([event_from_json])
 
