@@ -1,6 +1,7 @@
 import subprocess
 import time
 import random
+from datetime import datetime
 
 # ──────────────────────────────────────────────
 # ExpressVPN Control Section
@@ -21,10 +22,10 @@ def run_expressvpn_cmd(args, timeout=90):
         )
         output = result.stdout.strip()
         if output:
-            print(f"ExpressVPN CLI: {output}")
+            print(f"{datetime.now():%H:%M:%S} - ExpressVPN CLI: {output}")
         return True, output
     except Exception as e:
-        print(f"ExpressVPN CLI error: {e}")
+        print(f"{datetime.now():%H:%M:%S} - ExpressVPN CLI error: {e}")
         return False, str(e)
 
 
@@ -55,20 +56,20 @@ def change_vpn_location(location_id):
     changed = False
 
     while not changed:
-        print(f"Disconnecting VPN (attempt {attempt + 1})")
+        print(f"{datetime.now():%H:%M:%S} - Disconnecting VPN (attempt {attempt + 1})")
         vpn_disconnect()
-        print("Zzzzzz")
+        print("{datetime.now():%H:%M:%S} - Zzzzzz")
         time.sleep(4 + random.uniform(0, 3))
 
-        print(f"Changing VPN to ID: {location_id}")
+        print(f"{datetime.now():%H:%M:%S} - Changing VPN to ID: {location_id}")
         changed = vpn_connect(location_id)
 
         attempt += 1
         if attempt > 10:
-            print("Failed after 10 attempts")
+            print("{datetime.now():%H:%M:%S} - Failed after 10 attempts")
             return False
 
-    print("Location changed successfully")
+    print("{datetime.now():%H:%M:%S} - Location changed successfully")
     return True
 
 
@@ -85,35 +86,24 @@ def select_random_location():
     alias = random.choice(list(location_map.keys()))
     location_id = location_map[alias]
 
-    print(f"Selected location: {alias} (ID: {location_id})")
+    print(f"{datetime.now():%H:%M:%S} - Switching to location: {alias} (ID: {location_id})")
 
     success = change_vpn_location(location_id)
     if success:
-        print("IP rotation successful → continuing...")
+        print("{datetime.now():%H:%M:%S} - IP rotation successful → continuing...")
     else:
-        print("IP rotation failed → pausing longer...")
+        print("{datetime.now():%H:%M:%S} - IP rotation failed → pausing longer...")
         time.sleep(30)
 
 
 def reconnect():
     """Reconnect to Smart Location (best available)"""
-    print("Reconnecting to Smart Location...")
+    print(f"{datetime.now():%H:%M:%S} - Reconnecting to Smart Location...")
     vpn_disconnect()
     time.sleep(6)
     success = vpn_connect()  # no argument = Smart Location
     if success:
-        print("Reconnected successfully")
+        print(f"{datetime.now():%H:%M:%S} - Reconnected successfully")
     else:
-        print("Reconnect failed")
-
-
-if __name__ == "__main__":
-    print("Testing VPN rotation...")
-    select_random_location()
-    select_random_location()
-    select_random_location()
-    # You can also test reconnect if you want:
-    # time.sleep(15)
-    # reconnect()
-
+        print(f"{datetime.now():%H:%M:%S} - Reconnect failed")
 

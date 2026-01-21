@@ -1,5 +1,6 @@
 import sqlite3
 from typing import List, Dict, Any
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -80,12 +81,13 @@ def insert_or_skip_events(events: List[RunningEvent]):
     """
     Insert events only if neither the event_name nor the url already exists.
     """
+    print(f"{datetime.now():%H:%M:%S} - insert_or_skip_events")
     with sqlite3.connect('events.db') as conn:
         cursor = conn.cursor()
 
         for event in events:
-            if event_exists_by_name_or_url(event.event_name, event.url):
-                print(f"Skipped: '{event.event_name}' (already exists by name or URL)")
+            if event_with_url_exists(event.url):
+                print(f"skipped: '{event.event_name}' (already exists by name or URL)")
                 continue
 
             try:
@@ -104,11 +106,11 @@ def insert_or_skip_events(events: List[RunningEvent]):
                                    event.md,
                                    event.organiser,
                                ))
-                print(f"Added: '{event.event_name}'")
+                print(f"added: '{event.event_name}'")
             except sqlite3.IntegrityError:
-                print(f"Insertion failed (likely duplicate name/url): '{event.event_name}'")
+                print(f"insertion failed (likely duplicate name/url): '{event.event_name}'")
             except Exception as e:
-                print(f"Exception: '{e}'")
+                print(f"exception: '{e}'")
 
         # commit automatic at end of context
 
@@ -118,6 +120,23 @@ def event_from_dict(data: Dict[str, Any]) -> RunningEvent | None:
     try:
         return RunningEvent(**data)
     except Exception as e:
-        print(f"Exception: '{e}'")
+        print(f"exception: '{e}'")
         return None
 
+def migrate_remove_unique_name():
+    with sqlite3.connect('events.db') as conn:
+        cursor = conn.cursor()
+        # Backup old table
+        cursor.execute("ALTER TABLE events RENAME TO events_old")
+        # Create new table without UNIQUE on event_name
+        create_database()
+        # Copy data back
+        cursor.execute('''
+            INSERT INTO events 
+            (event_name, date, event_summary, location, start, finish, url, md, organiser)
+            SELECT event_name, date, event_summary, location, start, finish, url, md, organiser
+            FROM events_old
+        ''')
+        # Drop old table
+        cursor.execute("DROP TABLE events_old")
+        print("Migration complete: event_name no longer unique")
