@@ -123,20 +123,3 @@ def event_from_dict(data: Dict[str, Any]) -> RunningEvent | None:
         print(f"exception: '{e}'")
         return None
 
-def migrate_remove_unique_name():
-    with sqlite3.connect('events.db') as conn:
-        cursor = conn.cursor()
-        # Backup old table
-        cursor.execute("ALTER TABLE events RENAME TO events_old")
-        # Create new table without UNIQUE on event_name
-        create_database()
-        # Copy data back
-        cursor.execute('''
-            INSERT INTO events 
-            (event_name, date, event_summary, location, start, finish, url, md, organiser)
-            SELECT event_name, date, event_summary, location, start, finish, url, md, organiser
-            FROM events_old
-        ''')
-        # Drop old table
-        cursor.execute("DROP TABLE events_old")
-        print("Migration complete: event_name no longer unique")
