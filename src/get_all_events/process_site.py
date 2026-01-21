@@ -1,6 +1,7 @@
 import time
+import re
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, NamedTuple
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -17,15 +18,13 @@ def get_event_detail_urls(
     base_url: str,
     link_pattern: str,
     load_more_xpath: Optional[str] = None,
+    link_regex: Optional[str] = None,          # ← new parameter
     test_only: bool = False,
     min_wait_after_click: float = 2.5,
 ) -> List[str]:
     """
     Unified function to scrape event detail URLs from a listing page.
-
-    Supports:
-    - Sites with "Load More" button (e.g. RunThrough)
-    - Sites that load everything at once (e.g. Race for Life with ?size=n_1000_n)
+    Uses link_regex if provided (preferred), otherwise falls back to string contains.
     """
     print(f"{datetime.now():%H:%M:%S} - Starting scrape of: {listing_url}")
 
@@ -37,12 +36,13 @@ def get_event_detail_urls(
 
     try:
         driver.get(listing_url)
-        time.sleep(3.5)  # let initial JS settle
+        time.sleep(4.0)  # slightly increased for reliability
 
-        # Wait until at least one event link appears
+        # Wait until at least one candidate event link appears
+        wait_selector = f'a[href*="{link_pattern}"]' if not link_regex else f'a[href*="{link_pattern}"]'
         try:
             WebDriverWait(driver, 30).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, f'a[href*="{link_pattern}"]'))
+                EC.presence_of_element_located((By.CSS_SELECTOR, wait_selector))
             )
             print(f"{datetime.now():%H:%M:%S} - Event links detected")
         except Exception as e:
@@ -69,8 +69,11 @@ def get_event_detail_urls(
         print(f"{datetime.now():%H:%M:%S} - Parsing final page source...")
         soup = BeautifulSoup(driver.page_source, "html.parser")
 
-        # Find candidate links (case-insensitive)
-        event_links = soup.find_all('a', href=lambda h: h and link_pattern in str(h).lower())
+        # Find candidate links — prefer regex when available
+        if link_regex:
+            event_links = soup.find_all('a', href=re.compile(link_regex, re.IGNORECASE))
+        else:
+            event_links = soup.find_all('a', href=lambda h: h and link_pattern in str(h).lower())
 
         # Build full URLs + filter junk
         urls = []
@@ -83,7 +86,7 @@ def get_event_detail_urls(
             if full_url in seen:
                 continue
             # Basic filter — avoid nav, social, etc.
-            if any(x in full_url.lower() for x in ['facebook', 'twitter', 'instagram', '#', 'login', 'donate', 'signup']):
+            if any(x in full_url.lower() for x in ['facebook', 'twitter', 'instagram', '#', 'login', 'donate', 'signup', '/checkout', '/book/', '/tickets/']):
                 continue
             seen.add(full_url)
             urls.append(full_url)
@@ -104,18 +107,21 @@ def process_site(
     base_url: str,
     link_pattern: str,
     load_more_xpath: Optional[str] = None,
+    link_regex: Optional[str] = None,          # ← new
     page_number: int = 1,
+    test_only: bool = False,
 ):
-    print(f"\n{'=' * 60}")
+    print(f"\n{'=' * 70}")
     print(f"{datetime.now():%H:%M:%S} - Processing {site_name} (page {page_number})")
-    print(f"{'=' * 60}\n")
+    print(f"{'=' * 70}\n")
 
     detail_urls = get_event_detail_urls(
         listing_url=listing_url,
         base_url=base_url,
         link_pattern=link_pattern,
         load_more_xpath=load_more_xpath,
-        test_only=False,
+        link_regex=link_regex,                 # ← passed through
+        test_only=test_only,
     )
 
     if not detail_urls:
@@ -127,4 +133,5 @@ def process_site(
     for i, detail_url in enumerate(detail_urls, 1):
         print(f"{datetime.now():%H:%M:%S} - [{i}/{len(detail_urls)}] {detail_url}")
         store_details(page_number, detail_url)
-
+        if test_only:
+            break
