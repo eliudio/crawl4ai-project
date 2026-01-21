@@ -135,23 +135,26 @@ def main():
     #migrate_remove_unique_name()
     create_database()
 
-    # ── RunThrough ─────────────────────────────────────────────────────────────
-    process_site(
-        site_name="RunThrough",
-        listing_url="https://www.runthrough.co.uk/events-timeline",
-        base_url="https://www.runthrough.co.uk",
-        link_pattern="event/",
-        load_more_xpath="//*[contains(translate(text(), 'LMORE', 'lmore'), 'load more')]",
-    )
+    process_run_through = False
+    process_race_for_life = False
 
-    # ── Race for Life ──────────────────────────────────────────────────────────
-    process_site(
-        site_name="Race for Life",
-        listing_url="https://raceforlife.cancerresearchuk.org/find-an-event?size=n_1000_n",
-        base_url="https://raceforlife.cancerresearchuk.org",
-        link_pattern="find-an-event/",
-        load_more_xpath=None,           # No load more needed — all events load at once
-    )
+    if process_run_through:
+        process_site(
+            site_name="RunThrough",
+            listing_url="https://www.runthrough.co.uk/events-timeline",
+            base_url="https://www.runthrough.co.uk",
+            link_pattern="event/",
+            load_more_xpath="//*[contains(translate(text(), 'LMORE', 'lmore'), 'load more')]",
+        )
+
+    if process_race_for_life:
+        process_site(
+            site_name="Race for Life",
+            listing_url="https://raceforlife.cancerresearchuk.org/find-an-event?size=n_1000_n",
+            base_url="https://raceforlife.cancerresearchuk.org",
+            link_pattern="find-an-event/",
+            load_more_xpath=None,           # No load more needed — all events load at once
+        )
 
 
 if __name__ == "__main__":

@@ -85,4 +85,4 @@ def store_details(page: int, url: str) -> None:
             if event_from_json is not None:
                 insert_or_skip_events([event_from_json])
     else:
-        print(f"raceforlife.cancerresearchuk.org {datetime.now():%H:%M:%S} - skipping: {url} already exists")
+        print(f"{datetime.now():%H:%M:%S} - skipping: {url} already exists")
