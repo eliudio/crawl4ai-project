@@ -3,17 +3,45 @@
 * doubledotbot.com
 * 2dotbot.com
 * twodotbot.com
+* frøya.com
+* bọt.com
+* bõt.com
+* hobblez.com
 
 # What?
 1. Race db. Find a race
 2. Booking.com for races.
-   * organisers can create a race
+   * (small, local) organizers can create a race
+   * no commission
    * members can book to join
    * some races are only references
+3. History of races you've done, with time, ... Upload photos, ... Link to Strava / Garmin
+4. Community of people
+5. Map overview, with races, flags where you've ran, where other's ran, ...
+
+# How
+1. Scrape internet / organizers. 
+* host firecrawl locally
+* use grok for AI
+
+Run process_specified_sites.py: to process preconfigured sites
+Run process_sites.py: to create the site config for scraping by grok, then process that site
+
+2. Feed from Strava, to recognize which race you ran
+3. Flutterflow
+4. Stripe pay direct to the customer
+
+# Legal aspects
+1. Full database copy isn't ideal, so exclude aggregators
+2. Potentially request organizers if ok
+3. Check robots.txt / TOS
 
 # TODO:
 1. Add type of race, length of race
+2. Add frequency: yearly, monthly, weekly, daily, single event
 2. Instead of a hard coded list of SiteConfig: Ask grok to generate this SiteConfig for a URL, rather than have it in the code. Store that in a database and then use it.
+   THIS IS THE CHANGE I CURRENTLY HAVE AND NOT YET COMMITTED.
+   IT DOESN'T WORK YET
 3. Ability to rerun store_details from the md in the database, without scraping it.
 
 # COLLECT DATA:

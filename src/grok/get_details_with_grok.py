@@ -9,6 +9,7 @@ import json
 from typing import Dict, Any
 
 from events.events_manager import event_from_dict, insert_or_skip_events, event_with_url_exists
+from grok.key import GROK_API_KEY
 
 
 def get_details_with_grok(url: str, markdown: str) -> Dict[str, Any] | None:
@@ -18,7 +19,6 @@ def get_details_with_grok(url: str, markdown: str) -> Dict[str, Any] | None:
     """
     print(f"{datetime.now():%H:%M:%S} - get_details_with_grok: {url}")
     # ── You fill these in once you have them ──
-    GROK_API_KEY = "***REDACTED-ROTATE-THIS-KEY***"   # ← put your real key here
 
     client = OpenAI(
         api_key=GROK_API_KEY,

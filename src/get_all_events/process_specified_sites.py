@@ -14,6 +14,7 @@ class SiteConfig(NamedTuple):
     enabled: bool = True
 
 
+
 SITES: List[SiteConfig] = [
     SiteConfig(
         name="RunThrough",
@@ -40,7 +41,7 @@ SITES: List[SiteConfig] = [
         link_pattern="e/",
         load_more_xpath=None,
         link_regex=r'/e/[^/]+-\d+$',           # slug-number pattern
-        enabled=True,
+        enabled=False,
     ),
     SiteConfig(
         name="UK Running Events",
@@ -49,7 +50,7 @@ SITES: List[SiteConfig] = [
         link_pattern="events/",
         load_more_xpath=None,
         link_regex=r'/events/[^/]+/[^/]+-\d{4}(?:$|/)',  # category/slug-year
-        enabled=True,
+        enabled=False,
     ),
     SiteConfig(
         name="ATW Events",
@@ -58,7 +59,7 @@ SITES: List[SiteConfig] = [
         link_pattern="/e/",
         load_more_xpath=None,
         link_regex=r'/e/[^/]+-\d+$',           # same as Saturn
-        enabled=True,
+        enabled=False,
     ),
     SiteConfig(
         name="Phoenix Running",
@@ -67,7 +68,7 @@ SITES: List[SiteConfig] = [
         link_pattern="events/",
         load_more_xpath=None,
         link_regex=r'/events/[^/]+(?:-[^/]+)?$',  # slug or slug-more-slug
-        enabled=True,                          # example: turn on for testing
+        enabled=False,                          # example: turn on for testing
     ),
     SiteConfig(
         name="Zig Zag Running",
@@ -76,7 +77,7 @@ SITES: List[SiteConfig] = [
         link_pattern="e/",
         load_more_xpath="//*[contains(translate(text(), 'LMORE', 'lmore'), 'load more')]",
         link_regex=r'/e/[^/]+-\d+$',  # matches /e/slug-12345 style
-        enabled=True,  # ← set to True to include it
+        enabled=False,  # ← set to True to include it
     ),
     SiteConfig(
         name="It's Grim Up North Running",
@@ -85,7 +86,7 @@ SITES: List[SiteConfig] = [
         link_pattern="e/",
         load_more_xpath=None,                  # no load more needed
         link_regex=r'/e/[^/]+-\d+$',           # slug-number pattern (very reliable)
-        enabled=True,                          # set to True to include it now
+        enabled=False,                          # set to True to include it now
     ),
     SiteConfig(
         name="Sportiva Events",
@@ -94,10 +95,30 @@ SITES: List[SiteConfig] = [
         link_pattern="events/",
         load_more_xpath="//*[contains(translate(text(), 'LMORE', 'lmore'), 'load more')]",
         link_regex=r'/events/[^/]+/$',  # slug/ ending — very precise for this site
-        enabled=True,  # ← enable to test now
+        enabled=False,  # ← enable to test now
     ),
-]
+    SiteConfig(
+        name="Sportiva Events - All Events",
+        listing_url="https://sportivaevents.co.uk/events/",
+        base_url="https://sportivaevents.co.uk/",
+        link_pattern="/events/",
+        load_more_xpath='//*[contains(text(), "Load More") or contains(text(), "load more")]',  # case insensitive match
+        link_regex=r'^/events/[-a-z0-9]+/?$',
+        enabled=False
+    ),
+    SiteConfig(
+        name="Sportiva Events",
+        listing_url="https://sportivaevents.co.uk/events/",
+        base_url="https://sportivaevents.co.uk",
+        link_pattern="events/",
+        load_more_xpath="//*[contains(translate(text(), 'LOADMORE', 'loadmore'), 'load more') or contains(@class, 'load-more')]",
+        # Very precise regex: /events/ + slug chars + mandatory trailing /
+        link_regex=r'/events/[\w\-]+/$',
+        enabled=True,  # ← already set to True in your example — keep or change as needed
+    ),
 
+    # Generate in this conversation: https://x.com/i/grok?conversation=2013985939245158580
+]
 
 def main():
     #migrate_remove_unique_name()
