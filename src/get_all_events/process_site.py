@@ -108,6 +108,7 @@ def process_site(
     link_pattern: str,
     load_more_xpath: Optional[str] = None,
     link_regex: Optional[str] = None,          # ← new
+    skip_actual_processing: bool = False,
     page_number: int = 1,
     test_only: bool = False,
 ):
@@ -132,6 +133,7 @@ def process_site(
 
     for i, detail_url in enumerate(detail_urls, 1):
         print(f"{datetime.now():%H:%M:%S} - [{i}/{len(detail_urls)}] {detail_url}")
-        store_details(page_number, detail_url)
+        if not skip_actual_processing:
+            store_details(page_number, detail_url)
         if test_only:
             break

@@ -8,6 +8,7 @@ from typing import Optional
 
 from openai import OpenAI
 
+from get_all_events.process_site import process_site
 # Import your SiteConfig NamedTuple
 from site_config import SiteConfig
 
@@ -85,11 +86,11 @@ def generate_site_config(url: str) -> Optional[SiteConfig]:
         '  "link_regex": string|null,     // precise regex preferred\n'
         '  "enabled": true\n'
         "}\n\n"
-
+        
         "Key instructions:\n"
         "- Examine actual <a href=\"...\"> examples in markdown\n"
         "- If hrefs use different domain → set base_url to THAT domain\n"
-        "- Look for patterns like /e/slug-12345, /events/slug/, /races/id-...\n"
+        "- Look for patterns like /e, /events, /races, ...\n"
         "- Detect buttons like 'Load More', 'More Events', 'Show All'\n"
         "- If no useful content → use URL-based best guess\n\n"
 
@@ -140,7 +141,6 @@ def generate_site_config(url: str) -> Optional[SiteConfig]:
         print(f"{datetime.now():%H:%M:%S} - Grok error: {type(e).__name__}: {e}")
         return None
 
-
 def main():
     urls = [
         "https://www.zigzagrunning.co.uk/",
@@ -149,16 +149,20 @@ def main():
         "https://www.itsgrimupnorthrunning.co.uk/calendars/sport-events",
     ]
 
-    configs = []
     for url in urls:
-        cfg = generate_site_config(url)
-        if cfg:
-            configs.append(cfg)
+        config = generate_site_config(url)
+        process_site(
+            site_name=config.name,
+            listing_url=config.listing_url,
+            base_url=config.base_url,
+            link_pattern=config.link_pattern,
+            load_more_xpath=config.load_more_xpath,
+            link_regex=config.link_regex,
+            skip_actual_processing=True,
+            page_number=1,
+            test_only=False,
+        )
 
-    print(f"\nGenerated {len(configs)} configs:\n")
-    for cfg in configs:
-        print(cfg)
-        print("-" * 80)
 
 
 if __name__ == "__main__":
