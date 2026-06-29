@@ -1,6 +1,7 @@
 # generate_site_configs.py
 # Generates SiteConfig using Grok + real page content from self-hosted Firecrawl (v2 compatible)
 
+from pathlib import Path
 import json
 import requests
 from datetime import datetime
@@ -68,7 +69,10 @@ def generate_site_config(url: str) -> Optional[SiteConfig]:
 
     system_prompt = (
         "You are a precise scraper configuration generator for event listing pages.\n"
-        "Analyze the markdown content and return ONLY a valid JSON object.\n\n"
+        f"Generate me the arguments which I can use for the website {url}. Produce as JSON\n"
+        f"representation of the arguments for a call to function 'process_site'\n"
+        f"At the bottom of this prompt, I will share the implementation of process_site\n"
+        f"The config that you produce should work with process_site for website {url}\n"
 
         "Rules:\n"
         "- Output ONLY JSON { ... } – nothing else\n"
@@ -78,7 +82,7 @@ def generate_site_config(url: str) -> Optional[SiteConfig]:
 
         "Fields:\n"
         "{\n"
-        '  "name": string,               // short organiser name\n'
+        '  "site_name": string,               // short organiser name\n'
         '  "listing_url": string,         // input URL\n'
         '  "base_url": string,            // correct domain for detail URLs (critical! detect external domains)\n'
         '  "link_pattern": string,        // common substring in event <a href>\n'
@@ -87,15 +91,20 @@ def generate_site_config(url: str) -> Optional[SiteConfig]:
         '  "enabled": true\n'
         "}\n\n"
         
-        "Key instructions:\n"
-        "- Examine actual <a href=\"...\"> examples in markdown\n"
-        "- If hrefs use different domain → set base_url to THAT domain\n"
-        "- Look for patterns like /e, /events, /races, ...\n"
-        "- Detect buttons like 'Load More', 'More Events', 'Show All'\n"
-        "- If no useful content → use URL-based best guess\n\n"
-
         f"Page markdown:\n{markdown}"
     )
+
+    # Get the directory of the *current script file*
+    script_dir = Path(__file__).resolve().parent
+
+    # Build path to the sibling file
+    target_file = script_dir / "process_site.py"
+
+    content = ""
+    with target_file.open(encoding="utf-8") as f:
+        content = f.read()
+
+    system_prompt += f"\n\nThe implementation of process_site is below:\n{content}"
 
     user_prompt = "Return the JSON object now."
 

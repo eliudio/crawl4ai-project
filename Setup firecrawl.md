@@ -1,4 +1,6 @@
-﻿git clone https://github.com/mendableai/firecrawl.git C:\src\firecrawl
+﻿start docker desktop
+git clone https://github.com/mendableai/firecrawl.git 
+C:\src\firecrawl
 cd C:\src\firecrawl
 npm install
 Create a .env file in the root of C:\src\firecrawl (copy from .env.example if available).Set necessary variables, such as database connections (e.g., DATABASE_URL for PostgreSQL), queue settings (RabbitMQ if used), and any API keys for external services.
