@@ -10,8 +10,8 @@ Uses Selenium + BeautifulSoup. Designed to be driven by SiteConfig.
 import time
 import re
 from datetime import datetime
-from typing import Optional, List
-from urllib.parse import urljoin
+from typing import Optional, List, Tuple
+from urllib.parse import urljoin, urlparse
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -73,6 +73,59 @@ def _find_elements(driver, selector: str):
         return []
 
 
+def _looks_like_page_url(url: str) -> bool:
+    """
+    Does this URL's shape look like a page reference (e.g. '/p2', '/page/3') rather
+    than a content slug (e.g. '/phoenix-bedfordshire-the-prosecco-run')? A real event
+    detail page can coincidentally share a link-count profile with a listing page
+    (e.g. via a "related events" widget using the same card component), so counting
+    new links alone isn't a reliable signal — the URL shape is what actually
+    distinguishes "next page" from "unrelated content page that happened to match".
+    """
+    path = urlparse(url).path.rstrip("/")
+    last_segment = path.rsplit("/", 1)[-1]
+    if re.fullmatch(r"[a-zA-Z]{0,6}\d{1,5}", last_segment):
+        return True
+    query = urlparse(url).query
+    return bool(re.search(r"(?:^|&)(page|p)=\d+", query))
+
+
+def _new_driver():
+    """Build a headless Chrome driver with the standard options used throughout this module."""
+    options = webdriver.ChromeOptions()
+    options.add_argument('--headless=new')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_argument('--window-size=1920,1080')
+    return webdriver.Chrome(options=options)
+
+
+def _detect_page_url_template(current_url: str, next_href: str) -> Optional[str]:
+    """
+    If next_href looks like current_url/listing page with a trailing page number
+    (e.g. '.../events/p2', '.../events?page=2'), return a template string with
+    '{page}' in place of that number. Returns None if no such numeric pattern
+    is found — callers should fall back to click/follow-based navigation.
+
+    This matters because some sites render pagination as an absolute list of
+    page-number links (2, 3, 4, ... last) rather than a single relative 'Next'
+    link — repeatedly re-querying the same selector would just click '2' forever.
+    Once the numbering pattern is known, subsequent pages can be reached by
+    building the URL directly instead of depending on the DOM re-rendering a
+    'next' link that actually advances.
+    """
+    match = re.search(r"(\d+)(?!.*\d)", next_href)
+    if not match:
+        return None
+    number = match.group(1)
+    start, end = match.span(1)
+    template = next_href[:start] + "{page}" + next_href[end:]
+    if template.format(page=number) != next_href:
+        return None
+    return template
+
+
 def _wait_for_link_count_increase(driver, selector: str, previous_count: int, timeout: int = 12) -> bool:
     """
     Wait until the number of elements matching selector is > previous_count.
@@ -112,14 +165,7 @@ def get_event_detail_urls(
     """
     print(f"{datetime.now():%H:%M:%S} - Starting scrape of: {listing_url} (strategy={load_strategy})")
 
-    options = webdriver.ChromeOptions()
-    options.add_argument('--headless=new')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-blink-features=AutomationControlled')
-    options.add_argument('--window-size=1920,1080')
-
-    driver = webdriver.Chrome(options=options)
+    driver = _new_driver()
     all_urls: List[str] = []
     seen = set()
 
@@ -186,6 +232,7 @@ def get_event_detail_urls(
         elif load_strategy == "pagination" and next_button_selector:
             print(f"{datetime.now():%H:%M:%S} - Using PAGINATION strategy")
             page_num = 1
+            page_url_template: Optional[str] = None
 
             while page_num <= max_pages:
                 print(f"{datetime.now():%H:%M:%S} - Scraping page {page_num}")
@@ -195,40 +242,77 @@ def get_event_detail_urls(
                 page_urls = _extract_event_urls_from_soup(
                     soup, base_url, event_link_selector, link_pattern, link_regex
                 )
+                new_urls = [u for u in page_urls if u not in seen]
+
+                # Safety net: if a later page yields nothing new, the selector has
+                # likely matched the wrong element (e.g. an unrelated nav link) and
+                # wandered off the listing entirely — stop rather than keep going.
+                if page_num > 1 and not new_urls:
+                    print(f"{datetime.now():%H:%M:%S} - No new event links on this page — stopping "
+                          f"pagination (next_button_selector may have matched the wrong link)")
+                    break
+
                 for u in page_urls:
                     if u not in seen:
                         seen.add(u)
                         all_urls.append(u)
 
-                # Try to find and go to next page
-                next_btn = _find_element(driver, next_button_selector)
-                if not next_btn:
-                    print(f"{datetime.now():%H:%M:%S} - No 'Next' button found — end of pagination")
+                current_url = driver.current_url
+
+                # Once we know the numbered-page URL pattern, skip DOM lookups
+                # entirely and build the next URL directly — this is what keeps
+                # working for sites whose pagination is an absolute list of page
+                # links (1, 2, 3, ... N) rather than a single relative 'Next'.
+                if page_url_template:
+                    next_url = page_url_template.format(page=page_num + 1)
+                else:
+                    next_btn = _find_element(driver, next_button_selector)
+                    if not next_btn:
+                        print(f"{datetime.now():%H:%M:%S} - No 'Next' button found — end of pagination")
+                        break
+
+                    href = next_btn.get_attribute("href")
+                    if not href:
+                        # No usable href — fall back to clicking, and keep doing so
+                        # each iteration since there's no URL pattern to extrapolate.
+                        try:
+                            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", next_btn)
+                            time.sleep(0.3)
+                            try:
+                                next_btn.click()
+                            except Exception:
+                                driver.execute_script("arguments[0].click();", next_btn)
+                            time.sleep(min_wait_after_action + 1.0)
+                        except Exception as e:
+                            print(f"{datetime.now():%H:%M:%S} - Pagination click failed: {type(e).__name__}: {e}")
+                            break
+
+                        if driver.current_url == current_url:
+                            print(f"{datetime.now():%H:%M:%S} - URL did not change after clicking Next — stopping")
+                            break
+
+                        page_num += 1
+                        if test_only:
+                            break
+                        continue
+
+                    next_url = urljoin(driver.current_url, href)
+                    page_url_template = _detect_page_url_template(current_url, next_url)
+
+                if next_url == current_url:
+                    print(f"{datetime.now():%H:%M:%S} - Next page URL is the same as the current page — stopping")
                     break
 
                 try:
-                    href = next_btn.get_attribute("href")
-                    if href:
-                        next_url = urljoin(driver.current_url, href)
-                        print(f"{datetime.now():%H:%M:%S} - Navigating to next page: {next_url}")
-                        driver.get(next_url)
-                        time.sleep(3.0)
-                    else:
-                        # Fallback to click
-                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", next_btn)
-                        time.sleep(0.3)
-                        try:
-                            next_btn.click()
-                        except Exception:
-                            driver.execute_script("arguments[0].click();", next_btn)
-                        time.sleep(min_wait_after_action + 1.0)
-
-                    page_num += 1
-                    if test_only:
-                        break
-
+                    print(f"{datetime.now():%H:%M:%S} - Navigating to next page: {next_url}")
+                    driver.get(next_url)
+                    time.sleep(3.0)
                 except Exception as e:
                     print(f"{datetime.now():%H:%M:%S} - Pagination navigation failed: {type(e).__name__}: {e}")
+                    break
+
+                page_num += 1
+                if test_only:
                     break
 
             print(f"{datetime.now():%H:%M:%S} - Finished pagination after {page_num} pages")
@@ -323,6 +407,135 @@ def _extract_event_urls_from_soup(
         filtered.append(u)
 
     return filtered
+
+
+def validate_site_config(config: SiteConfig) -> Tuple[bool, str]:
+    """
+    Load the live listing page and confirm the config's strategy/selectors actually
+    behave as claimed, before it's trusted or cached. Catches not just "selector
+    matched nothing" but the more dangerous case of "selector matched the wrong
+    element" (e.g. a next_button_selector that grabs an unrelated nav link).
+    """
+    driver = _new_driver()
+    try:
+        driver.get(config.listing_url)
+        time.sleep(3.0)
+
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+        initial_urls = _extract_event_urls_from_soup(
+            soup, config.base_url, config.event_link_selector, config.link_pattern, config.link_regex
+        )
+        if not initial_urls:
+            return False, (
+                f"event_link_selector={config.event_link_selector!r} / link_pattern={config.link_pattern!r} "
+                f"found 0 event links on the initial page load."
+            )
+
+        if config.load_strategy == "load_more":
+            btn = _find_element(driver, config.load_more_selector) if config.load_more_selector else None
+            if not btn:
+                return False, (
+                    f"load_strategy='load_more' but load_more_selector={config.load_more_selector!r} "
+                    f"did not match any element on the page."
+                )
+
+        elif config.load_strategy == "pagination":
+            btn = _find_element(driver, config.next_button_selector) if config.next_button_selector else None
+            if not btn:
+                return False, (
+                    f"load_strategy='pagination' but next_button_selector={config.next_button_selector!r} "
+                    f"did not match any element on the page."
+                )
+
+            current_url = driver.current_url
+            href = btn.get_attribute("href")
+            try:
+                if href:
+                    next_url = urljoin(driver.current_url, href)
+                    if next_url == current_url:
+                        return False, (
+                            f"next_button_selector={config.next_button_selector!r} matched an element whose "
+                            f"href points back to the same page ({next_url}) — it likely matched the wrong link."
+                        )
+                    driver.get(next_url)
+                else:
+                    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+                    time.sleep(0.3)
+                    try:
+                        btn.click()
+                    except Exception:
+                        driver.execute_script("arguments[0].click();", btn)
+                time.sleep(2.5)
+            except Exception as e:
+                return False, f"Failed to follow next_button_selector: {type(e).__name__}: {e}"
+
+            if driver.current_url == current_url:
+                return False, (
+                    f"next_button_selector={config.next_button_selector!r} did not navigate anywhere "
+                    f"(URL unchanged: {current_url})."
+                )
+
+            if not _looks_like_page_url(driver.current_url):
+                return False, (
+                    f"next_button_selector={config.next_button_selector!r} navigated to "
+                    f"{driver.current_url!r}, which looks like a content/detail page (its last URL segment "
+                    f"is a descriptive slug, not a short page number) rather than the next listing page. "
+                    f"It likely matched an event's own detail link whose href coincidentally contains the "
+                    f"same prefix as the real pagination links."
+                )
+
+            soup2 = BeautifulSoup(driver.page_source, "html.parser")
+            next_page_urls = _extract_event_urls_from_soup(
+                soup2, config.base_url, config.event_link_selector, config.link_pattern, config.link_regex
+            )
+            new_urls = [u for u in next_page_urls if u not in initial_urls]
+
+            # A genuine next listing page yields roughly as many new events as the
+            # first page did. A wrongly-matched link (e.g. an event detail page
+            # whose "related events" widget happens to share the event_link_selector)
+            # can still produce a handful of new URLs, so "not empty" isn't a strict
+            # enough bar — require a substantial fraction of the initial page's count.
+            min_required = max(5, int(len(initial_urls) * 0.3))
+            if len(new_urls) < min_required:
+                return False, (
+                    f"next_button_selector={config.next_button_selector!r} navigated to {driver.current_url!r}, "
+                    f"which only yielded {len(new_urls)} new event link(s) (expected at least {min_required}, "
+                    f"~30% of the {len(initial_urls)} found on the first page). This looks like it matched an "
+                    f"unrelated link (e.g. an event detail page with a 'related events' widget) rather than "
+                    f"the real 'next page' control."
+                )
+
+        return True, "ok"
+    except Exception as e:
+        return False, f"Validation crashed: {type(e).__name__}: {e}"
+    finally:
+        driver.quit()
+
+
+def count_visible_event_links(
+    listing_url: str,
+    base_url: str,
+    event_link_selector: Optional[str] = None,
+    link_pattern: Optional[str] = None,
+    link_regex: Optional[str] = None,
+) -> int:
+    """
+    How many event links are visible on the listing page's first load, using only
+    event_link_selector/link_pattern/link_regex (no pagination/load-more). Used to
+    check whether a single_page fallback is worth using when a pagination or
+    load_more strategy fails validation — better to capture page 1 than nothing.
+    """
+    driver = _new_driver()
+    try:
+        driver.get(listing_url)
+        time.sleep(3.0)
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+        urls = _extract_event_urls_from_soup(soup, base_url, event_link_selector, link_pattern, link_regex)
+        return len(urls)
+    except Exception:
+        return 0
+    finally:
+        driver.quit()
 
 
 def process_site(

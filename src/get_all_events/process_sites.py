@@ -24,6 +24,10 @@ if __name__ == "__main__":
             print(f"⚠️  Failed to generate config for {url} — skipping.\n")
             continue
 
+        if not config.enabled:
+            print(f"⚠️  Config for {url} is marked disabled — skipping.\n")
+            continue
+
         # Call the updated process_site with new parameters
         process_site(
             site_name=config.name,
