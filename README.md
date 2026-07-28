@@ -59,13 +59,15 @@ Retrieve organisers from aggregators.
 * etchrock.com
 * racedirectorshq.com/gb/directory/
 
-* Trail Running Association 
-* Centurion Running/Ultra X sites.
-* British Triathlon 
-* Challenge Family/IRONMAN calendars.
-* Spartan Race
-* Tough Mudder
-* The Wolf Run sites
+* Trail Running Association - https://www.tra-uk.org/
+* Centurion Running - https://www.centurionrunning.com/
+* Ultra X - https://ultra-x.co/
+* British Triathlon - https://www.britishtriathlon.org/
+* Challenge Family - https://www.challenge-family.com/
+* IRONMAN - https://www.ironman.com/
+* Spartan Race (UK) - https://uk.spartan.com/en/
+* Tough Mudder (UK) - https://uk.toughmudder.com/
+* The Wolf Run - https://www.thewolfrun.com/
 
 ## Organisers
 Collect races from organisers

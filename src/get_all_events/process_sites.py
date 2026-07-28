@@ -6,11 +6,11 @@ from process_site import process_site
 
 if __name__ == "__main__":
     urls = [
-        "https://findarace.com/events",
-        "https://www.zigzagrunning.co.uk/",
-        "https://www.itsgrimupnorthrunning.co.uk/calendars/sport-events",
         "https://sportivaevents.co.uk/events/",
         "https://www.phoenixrunning.co.uk/events",
+        "https://www.itsgrimupnorthrunning.co.uk/calendars/sport-events",
+        "https://findarace.com/events",
+        "https://www.zigzagrunning.co.uk/",
     ]
 
     for url in urls:
