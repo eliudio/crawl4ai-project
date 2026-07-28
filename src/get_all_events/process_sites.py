@@ -6,6 +6,13 @@ from process_site import process_site
 
 if __name__ == "__main__":
     urls = [
+        "https://findarace.com/10k-runs",
+        "https://www.ukrunningevents.co.uk/events/trail-runs",
+        "https://www.ukrunningevents.co.uk/events/hiking-trails",
+        "https://www.atwevents.co.uk/calendars/sport-events",
+        "https://www.saturnrunning.co.uk/calendars/sport-events",
+        "https://www.runthrough.co.uk/events-timeline",
+        "https://raceforlife.cancerresearchuk.org/find-an-event?size=n_200_n&sort-field=eventDate",
         "https://sportivaevents.co.uk/events/",
         "https://www.phoenixrunning.co.uk/events",
         "https://www.itsgrimupnorthrunning.co.uk/calendars/sport-events",

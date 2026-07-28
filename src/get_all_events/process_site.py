@@ -73,21 +73,31 @@ def _find_elements(driver, selector: str):
         return []
 
 
-def _looks_like_page_url(url: str) -> bool:
+def _looks_like_page_url(url: str, current_url: str) -> bool:
     """
-    Does this URL's shape look like a page reference (e.g. '/p2', '/page/3') rather
-    than a content slug (e.g. '/phoenix-bedfordshire-the-prosecco-run')? A real event
-    detail page can coincidentally share a link-count profile with a listing page
-    (e.g. via a "related events" widget using the same card component), so counting
-    new links alone isn't a reliable signal — the URL shape is what actually
-    distinguishes "next page" from "unrelated content page that happened to match".
+    Does this URL look like another page of the SAME listing rather than a jump to
+    a content/detail page? A real event detail page can coincidentally share a
+    link-count profile with a listing page (e.g. via a "related events" widget
+    using the same card component), so counting new links alone isn't reliable —
+    the URL shape is what actually distinguishes "next page" from "unrelated
+    content page that happened to match".
+
+    Two cases are accepted:
+    1. Same path, different query string — whatever the pagination query param is
+      called (?page=2, ?current=n_2_n, ?p=2, ...), if the path itself didn't
+      change we're still on the listing, just with different query state. This is
+      deliberately not tied to any specific param name/encoding, since sites vary
+      wildly (e.g. one real site paginates via 'current=n_2_n').
+    2. Different path, but the last segment is a short page-number-shaped token
+      (e.g. '/events/p2') rather than a descriptive multi-word slug.
     """
-    path = urlparse(url).path.rstrip("/")
-    last_segment = path.rsplit("/", 1)[-1]
-    if re.fullmatch(r"[a-zA-Z]{0,6}\d{1,5}", last_segment):
+    current_path = urlparse(current_url).path.rstrip("/")
+    candidate_path = urlparse(url).path.rstrip("/")
+    if candidate_path == current_path:
         return True
-    query = urlparse(url).query
-    return bool(re.search(r"(?:^|&)(page|p)=\d+", query))
+
+    last_segment = candidate_path.rsplit("/", 1)[-1]
+    return bool(re.fullmatch(r"[a-zA-Z]{0,6}\d{1,5}", last_segment))
 
 
 def _new_driver():
@@ -498,13 +508,13 @@ def validate_site_config(config: SiteConfig) -> Tuple[bool, str]:
                     f"(URL unchanged: {current_url})."
                 )
 
-            if not _looks_like_page_url(driver.current_url):
+            if not _looks_like_page_url(driver.current_url, current_url):
                 return False, (
                     f"next_button_selector={config.next_button_selector!r} navigated to "
-                    f"{driver.current_url!r}, which looks like a content/detail page (its last URL segment "
-                    f"is a descriptive slug, not a short page number) rather than the next listing page. "
-                    f"It likely matched an event's own detail link whose href coincidentally contains the "
-                    f"same prefix as the real pagination links."
+                    f"{driver.current_url!r}, which looks like a content/detail page (different path, and its "
+                    f"last URL segment is a descriptive slug, not a short page number) rather than the next "
+                    f"listing page. It likely matched an event's own detail link whose href coincidentally "
+                    f"contains the same prefix as the real pagination links."
                 )
 
             soup2 = BeautifulSoup(driver.page_source, "html.parser")

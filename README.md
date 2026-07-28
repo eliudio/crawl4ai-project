@@ -231,15 +231,18 @@ Collect races from organisers
 24,Running Events Devon,https://runningeventsdevon.co.uk/
 25,Onerace Events,https://www.onerace.events/
 25,The Fix Events UK,https://thefixevents.com/
-26,Sportiva Events,CODED,https://sportivaevents.co.uk/events/
-28,It's Grim up North Running, CODED,https://www.itsgrimupnorthrunning.co.uk/
-33,Zig Zag Running, CODED,https://www.zigzagrunning.co.uk/
-35,Phoenix Running, CODED,https://www.phoenixrunning.co.uk/
-35,UK Running Events, CODED,https://www.ukrunningevents.co.uk/
-44,ATW, CODED,https://www.atwevents.co.uk/
-60,Saturn Running, CODED,https://www.saturnrunning.co.uk/
-235,RunThrough Events, CODED,https://www.runthrough.co.uk/
-295,Cancer Research UK - Race for Life, CODED,https://raceforlife.cancerresearchuk.org/
+26,Sportiva Events,https://sportivaevents.co.uk/events/
+28,It's Grim up North Running, https://www.itsgrimupnorthrunning.co.uk/
+33,Zig Zag Running, https://www.zigzagrunning.co.uk/
+35,Phoenix Running, https://www.phoenixrunning.co.uk/
+
+35,UK Running Events, CODED, https://www.ukrunningevents.co.uk/events/trail-runs
+35,UK Running Events, CODED, https://www.ukrunningevents.co.uk/events/hiking-trails
+44,ATW, CODED, https://www.atwevents.co.uk/calendars/sport-events
+60,Saturn Running, CODED, https://www.saturnrunning.co.uk/calendars/sport-events
+
+235,RunThrough Events, CODED, https://www.runthrough.co.uk/events-timeline
+295,Cancer Research UK - Race for Life, CODED, https://raceforlife.cancerresearchuk.org/find-an-event?size=n_200_n&sort-field=eventDate
 
 ### Collect organizers from https://racecheck.com/
 
