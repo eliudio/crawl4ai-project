@@ -439,6 +439,29 @@ def validate_site_config(config: SiteConfig) -> Tuple[bool, str]:
                     f"did not match any element on the page."
                 )
 
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+                time.sleep(0.3)
+                try:
+                    btn.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", btn)
+                time.sleep(2.5)
+            except Exception as e:
+                return False, f"Failed to click load_more_selector: {type(e).__name__}: {e}"
+
+            soup_after = BeautifulSoup(driver.page_source, "html.parser")
+            urls_after = _extract_event_urls_from_soup(
+                soup_after, config.base_url, config.event_link_selector, config.link_pattern, config.link_regex
+            )
+            if len(urls_after) <= len(initial_urls):
+                return False, (
+                    f"load_more_selector={config.load_more_selector!r} matched an element, but clicking it "
+                    f"did not increase the number of event links ({len(initial_urls)} before, "
+                    f"{len(urls_after)} after) — it's likely the wrong element (e.g. an unrelated button "
+                    f"that matched by coincidence) or not actually clickable."
+                )
+
         elif config.load_strategy == "pagination":
             btn = _find_element(driver, config.next_button_selector) if config.next_button_selector else None
             if not btn:

@@ -139,10 +139,19 @@ def _build_structural_hints(html: str, max_chars: int = 4000) -> str:
 
     candidates = []
     seen_ids = set()
-    for tag in soup.find_all(["button", "a"]):
+    # Page builders (Divi, Elementor, Wix, ...) very commonly render a "Load More"
+    # control as a <div>/<span> with a click handler rather than a semantic
+    # <button>/<a> — so those tags must be scanned too. The length cap keeps this
+    # from matching a giant wrapping container whose full nested text happens to
+    # contain the phrase somewhere deep inside.
+    for tag in soup.find_all(["button", "a", "div", "span", "li"]):
         text = tag.get_text(strip=True)
+        if len(text) > 60:
+            continue
         aria = tag.get("aria-label", "")
-        if _BUTTON_TEXT_PATTERN.search(text) or _BUTTON_TEXT_PATTERN.search(aria):
+        classes = " ".join(tag.get("class", []))
+        if (_BUTTON_TEXT_PATTERN.search(text) or _BUTTON_TEXT_PATTERN.search(aria)
+                or _BUTTON_TEXT_PATTERN.search(classes.replace("-", " ").replace("_", " "))):
             if id(tag) not in seen_ids:
                 seen_ids.add(id(tag))
                 candidates.append(tag)
@@ -153,6 +162,10 @@ def _build_structural_hints(html: str, max_chars: int = 4000) -> str:
 
     if candidates:
         lines.append("\nCANDIDATE 'LOAD MORE' / 'NEXT PAGE' ELEMENTS (real HTML):")
+        lines.append("(Note: these are NOT necessarily <button> or <a> tags — page builders like "
+                      "Divi/Elementor/Wix often render a clickable 'Load More' as a plain <div> or <span> "
+                      "with a class-based click handler. Build load_more_selector from the actual tag name "
+                      "and class shown below, e.g. 'div.dmach-loadmore', not an assumed 'button' selector.)")
         for tag in candidates[:10]:
             classes = " ".join(tag.get("class", []))
             href = tag.get("href", "")
@@ -160,7 +173,8 @@ def _build_structural_hints(html: str, max_chars: int = 4000) -> str:
             text = tag.get_text(strip=True)[:40]
             lines.append(f'  <{tag.name} class="{classes}" href="{href}" aria-label="{aria}">{text}</{tag.name}>')
     else:
-        lines.append("\nNo obvious 'Load More' / 'Next' element found in the real HTML.")
+        lines.append("\nNo obvious 'Load More' / 'Next' element found in the real HTML "
+                      "(it may only appear as a <div>/<span> with unrelated text, or be added by JS after load).")
 
     pagination_groups = _find_numbered_pagination_links(soup)
     if pagination_groups:
