@@ -6,7 +6,12 @@ from process_site import process_site
 
 if __name__ == "__main__":
     urls = [
+        "https://www.zigzagrunning.co.uk/",
+        "https://www.phoenixrunning.co.uk/events",
         "https://findarace.com/10k-runs",
+        "https://findarace.com/half-marathons",
+        "https://findarace.com/marathons",
+        "https://findarace.com/ultra-marathons",
         "https://www.ukrunningevents.co.uk/events/trail-runs",
         "https://www.ukrunningevents.co.uk/events/hiking-trails",
         "https://www.atwevents.co.uk/calendars/sport-events",

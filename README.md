@@ -1,4 +1,92 @@
-﻿# Name
+﻿# Server hosted
+
+## Architecture Overview
+
+```
+┌─────────────┐   scheduler (cron)
+│ Cloud       │──────────────┐
+│ Scheduler   │              ▼
+└─────────────┘      ┌──────────────────┐
+                     │ queue: listings  │
+                     └────────┬─────────┘
+                              ▼
+                   ┌────────────────────────┐
+                   │ Worker: listing-crawl  │  (browser, proxy)
+                   │  Playwright/Firecrawl  │
+                   └────────┬───────────────┘
+                            ▼
+                   ┌──────────────────┐
+                   │ queue: events    │
+                   └────────┬─────────┘
+                            ▼
+                   ┌────────────────────────┐
+                   │ Worker: event-crawl    │  (browser, proxy)
+                   │  Playwright/Firecrawl  │
+                   └────────┬───────────────┘
+                            ▼
+                   ┌──────────────────┐
+                   │ Database         │
+                   │ (Firestore/SQL)  │
+                   └──────────────────┘
+```
+
+## Current State
+
+We want to create a database with sports event details. Sports events such as running (initially), 
+cycling, and other sports events. The database should contain event details such as location, price, description, and 
+more specific details like distance, age, ...
+
+There are online database available. There are 2 distinct groups of providers:
+2) the event organiser: these are companies and organisations who organise sports events. 
+Example: https://www.runthrough.co.uk/, https://www.onerace.events/events
+2) the event aggregators: these are companies that actually collect events from the internet and make them available 
+online in 1 big database. Example: https://findarace.com/
+3) the event platforms: these are companies that allow event organisers to host their event on their platform
+
+We are interested in gathering events from events organisers. The purpose of this database is to be used for our
+own aggregator project. We do not want to steal events from the event aggregator databases themselves. However,
+we might want to use event aggregators to find out which event organisers exists. But we will never actually use
+the details provided from the aggregators. The same with event platforms. The latter is harder to detect, but we
+should try to exclude.
+
+I have this prototype project "crwarl4ai project" today. This illustrates this intend.
+
+The prototype currently uses 
+- python as language
+- firecrawl to crawl, browse, interact with the internet / interpret contents of pages 
+- grok AI to interpret contents of pages
+- express VPN to remain anonymous and not look like a robot
+- sqlite3 to store results 
+
+The prototype currently runs on a laptop inside pycharm.
+
+The prototype currently is fed a list of URLS. Each URL represents a home page with a list of events.
+These events are links to event details pages.
+
+Improvements: 
+1) We actually want the prototype to be extended: the list of URLs itself should not be provided but 
+found from events aggregators. The way this would go is 
+1.1) we'd go to the event aggregator and find events. For example:  https://findarace.com/10k-runs
+1.2) from there we find races, For example: https://findarace.com/events/the-one-in-the-park-hyde-park
+1.3) from there we find the organiser page. For example: https://findarace.com/onerace
+1.4) from there we find the organiser home page. For example https://www.onerace.events/
+1.5) from there we find the events. For example https://www.onerace.events/events
+
+This improvement is possibly something we will do in phase 2 of the project, as this searching and finding 
+URLs is potentially different per event aggregator, and hence more bespoke solution.
+
+So initially we will probably stick with a list of manually retrieved list of event organiser event URLs.
+
+I want to implement this differently so that it becomes scalable, more performant and not reliant on a laptop to run.
+I don't mind which technology, language or architecture. It must run on a host, e.g. Google Firebase.
+Let's start with brainstorming around what architecture is best suited for this.
+
+
+Actions: 
+- buy claude.com antropic or use grok (to be decided) 
+- drop claude.ai subscription
+
+# Name
 * böt.com
 * doubledotbot.com
 * 2dotbot.com
@@ -228,13 +316,13 @@ Collect races from organisers
 18,Run Nation,https://www.runnation.co.uk/
 19,Rasselbock Running,https://rasselbock.co.uk/
 21,Nice Work,https://www.nice-work.org.uk/
-24,Running Events Devon,https://runningeventsdevon.co.uk/
-25,Onerace Events,https://www.onerace.events/
-25,The Fix Events UK,https://thefixevents.com/
+24,Running Events Devon,https://runningeventsdevon.co.uk/events
+25,Onerace Events,https://www.onerace.events/events
+25,The Fix Events UK,https://thefixevents.com/events
 26,Sportiva Events,https://sportivaevents.co.uk/events/
-28,It's Grim up North Running, https://www.itsgrimupnorthrunning.co.uk/
+28,It's Grim up North Running, https://www.itsgrimupnorthrunning.co.uk/calendars/sport-events
 33,Zig Zag Running, https://www.zigzagrunning.co.uk/
-35,Phoenix Running, https://www.phoenixrunning.co.uk/
+35,Phoenix Running, https://www.phoenixrunning.co.uk/events
 
 35,UK Running Events, CODED, https://www.ukrunningevents.co.uk/events/trail-runs
 35,UK Running Events, CODED, https://www.ukrunningevents.co.uk/events/hiking-trails

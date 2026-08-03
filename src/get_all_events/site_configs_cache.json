@@ -150,16 +150,16 @@
     "notes": null
   },
   "https://findarace.com/10k-runs": {
-    "name": "Find a Race",
+    "name": "findarace",
     "listing_url": "https://findarace.com/10k-runs",
     "base_url": "https://findarace.com",
     "event_link_selector": "a[href*=\"/events/\"]",
     "link_pattern": "/events/",
     "link_regex": null,
-    "load_strategy": "single_page",
+    "load_strategy": "pagination",
     "load_more_selector": null,
     "max_load_clicks": 40,
-    "next_button_selector": null,
+    "next_button_selector": "//a[contains(@href, '/10k-runs/p') and translate(normalize-space(text()), '0123456789', '') = '']",
     "max_pages": 200,
     "enabled": true,
     "notes": null

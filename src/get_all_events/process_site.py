@@ -21,7 +21,6 @@ from selenium.common.exceptions import (
     StaleElementReferenceException,
     TimeoutException,
     ElementClickInterceptedException,
-    NoSuchElementException,
 )
 from bs4 import BeautifulSoup
 
@@ -45,14 +44,12 @@ def _find_element(driver, selector: str):
         if _is_xpath(selector):
             return driver.find_element(By.XPATH, selector)
         return driver.find_element(By.CSS_SELECTOR, selector)
-    except NoSuchElementException:
+    except Exception:
         if not _is_xpath(selector):
             try:
                 return driver.find_element(By.XPATH, selector)
-            except NoSuchElementException:
+            except Exception:
                 return None
-        return None
-    except Exception:
         return None
 
 

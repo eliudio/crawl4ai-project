@@ -107,36 +107,62 @@ def _find_numbered_pagination_links(soup: BeautifulSoup) -> dict:
     return {t: anchors for t, anchors in templates.items() if len(anchors) >= 2}
 
 
-def _build_structural_hints(html: str, max_chars: int = 4000) -> str:
+def _build_structural_hints(html: str, max_chars: int = 6000) -> str:
     """
     Build a compact summary of the page's REAL anchor/button structure — actual
     classes and hrefs pulled from the DOM, not inferred from markdown prose — so
     Grok's selector guesses are grounded in what's actually there instead of guessed
     from URL conventions. This is what catches cases like numbered pagination links
     (e.g. <a href="/events/p2">2</a>) that a markdown-only view can't reveal.
+
+    Sections are built in priority order — pagination evidence first, then load-more
+    candidates, then the (often long) anchor-group listing — and only the LAST,
+    least-critical section is truncated to fit max_chars. Pages with many anchor
+    groups (e.g. month/category filter links) could otherwise push the pagination
+    evidence entirely out of the truncated text, leaving Grok to guess blind on
+    exactly the thing most likely to make or break the config.
     """
     if not html:
         return "No HTML available — infer conservatively."
 
     soup = BeautifulSoup(html, "html.parser")
 
-    groups: dict = {}
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if not href or any(j in href.lower() for j in _JUNK_HREF_HINTS):
-            continue
-        groups.setdefault(_group_key(href), []).append(a)
+    # --- Section 1: numbered pagination evidence (highest priority, never truncated) ---
+    critical_lines = []
+    pagination_groups = _find_numbered_pagination_links(soup)
+    if pagination_groups:
+        critical_lines.append("CANDIDATE NUMBERED PAGE LINKS — STRONG EVIDENCE OF MULTI-PAGE PAGINATION:")
+        critical_lines.append("(Plain-numbered links like '2', '3', '4' sharing one href pattern. "
+                               "This site has multiple pages even though no 'Load More'/'Next' text exists.)")
+        for template, anchors in list(pagination_groups.items())[:5]:
+            sample = anchors[0]
+            classes = " ".join(sample.get("class", []))
+            href_prefix = template.split("{n}")[0]
+            path_prefix = urlparse(href_prefix).path or href_prefix
+            suggested_xpath = (
+                f"//a[contains(@href, '{path_prefix}') and "
+                f"translate(normalize-space(text()), '0123456789', '') = '']"
+            )
+            critical_lines.append(
+                f'  href pattern "{template}" — {len(anchors)} page links found, '
+                f'e.g. <a class="{classes}" href="{sample["href"]}">{sample.get_text(strip=True)}</a>'
+            )
+            critical_lines.append(
+                f"  SUGGESTED next_button_selector — COPY THIS EXACTLY, do not rewrite or 'simplify' it, "
+                f"and do NOT use XPath 2.0 syntax like castable/matches() which browsers can't evaluate: "
+                f"{suggested_xpath}"
+            )
+        critical_lines.append(
+            "If this section is non-empty, you MUST set load_strategy='pagination' — do not choose "
+            "single_page or load_more. IMPORTANT: a plain 'a[href*=\"...\"]' CSS substring selector is "
+            "NOT safe here — an event's own slug can coincidentally start with the same letters as the "
+            "page-link prefix (e.g. '/events/p' also matches an event slug like '/events/phoenix-run'). "
+            "Use the SUGGESTED XPath above VERBATIM (only swapping the path prefix if needed) — it is "
+            "plain XPath 1.0, the only dialect Selenium/Chrome can evaluate. Do not invent your own "
+            "text-is-numeric expression."
+        )
 
-    ranked = sorted(groups.items(), key=lambda kv: len(kv[1]), reverse=True)
-
-    lines = ["REAL ANCHOR LINK GROUPS (grouped by URL path prefix, largest groups first):"]
-    for key, anchors in ranked[:8]:
-        lines.append(f"\nGroup {key!r} — {len(anchors)} links found on page:")
-        for a in anchors[:3]:
-            classes = " ".join(a.get("class", []))
-            text = a.get_text(strip=True)[:60]
-            lines.append(f'  <a class="{classes}" href="{a["href"]}">{text}</a>')
-
+    # --- Section 2: load-more / next candidates (also small, never truncated) ---
     candidates = []
     seen_ids = set()
     # Page builders (Divi, Elementor, Wix, ...) very commonly render a "Load More"
@@ -161,53 +187,52 @@ def _build_structural_hints(html: str, max_chars: int = 4000) -> str:
             candidates.append(tag)
 
     if candidates:
-        lines.append("\nCANDIDATE 'LOAD MORE' / 'NEXT PAGE' ELEMENTS (real HTML):")
-        lines.append("(Note: these are NOT necessarily <button> or <a> tags — page builders like "
-                      "Divi/Elementor/Wix often render a clickable 'Load More' as a plain <div> or <span> "
-                      "with a class-based click handler. Build load_more_selector from the actual tag name "
-                      "and class shown below, e.g. 'div.dmach-loadmore', not an assumed 'button' selector.)")
+        critical_lines.append("\nCANDIDATE 'LOAD MORE' / 'NEXT PAGE' ELEMENTS (real HTML):")
+        critical_lines.append("(Note: these are NOT necessarily <button> or <a> tags — page builders like "
+                               "Divi/Elementor/Wix often render a clickable 'Load More' as a plain <div> or "
+                               "<span> with a class-based click handler. Build load_more_selector from the "
+                               "actual tag name and class shown below, e.g. 'div.dmach-loadmore', not an "
+                               "assumed 'button' selector.)")
         for tag in candidates[:10]:
             classes = " ".join(tag.get("class", []))
             href = tag.get("href", "")
             aria = tag.get("aria-label", "")
             text = tag.get_text(strip=True)[:40]
-            lines.append(f'  <{tag.name} class="{classes}" href="{href}" aria-label="{aria}">{text}</{tag.name}>')
+            critical_lines.append(
+                f'  <{tag.name} class="{classes}" href="{href}" aria-label="{aria}">{text}</{tag.name}>'
+            )
+    elif not pagination_groups:
+        critical_lines.append("No obvious 'Load More' / 'Next' element found in the real HTML "
+                               "(it may only appear as a <div>/<span> with unrelated text, or be added by "
+                               "JS after load).")
+
+    # --- Section 3: anchor link groups (largest, reference-only — truncated if needed) ---
+    groups: dict = {}
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if not href or any(j in href.lower() for j in _JUNK_HREF_HINTS):
+            continue
+        groups.setdefault(_group_key(href), []).append(a)
+
+    ranked = sorted(groups.items(), key=lambda kv: len(kv[1]), reverse=True)
+
+    reference_lines = ["REAL ANCHOR LINK GROUPS (grouped by URL path prefix, largest groups first):"]
+    for key, anchors in ranked[:8]:
+        reference_lines.append(f"\nGroup {key!r} — {len(anchors)} links found on page:")
+        for a in anchors[:3]:
+            classes = " ".join(a.get("class", []))
+            text = a.get_text(strip=True)[:60]
+            reference_lines.append(f'  <a class="{classes}" href="{a["href"]}">{text}</a>')
+
+    critical_text = "\n".join(critical_lines)
+    reference_text = "\n".join(reference_lines)
+    budget = max_chars - len(critical_text) - 2
+    if budget < 200:
+        reference_text = "(anchor link groups omitted — pagination/load-more evidence took priority)"
     else:
-        lines.append("\nNo obvious 'Load More' / 'Next' element found in the real HTML "
-                      "(it may only appear as a <div>/<span> with unrelated text, or be added by JS after load).")
+        reference_text = reference_text[:budget]
 
-    pagination_groups = _find_numbered_pagination_links(soup)
-    if pagination_groups:
-        lines.append("\nCANDIDATE NUMBERED PAGE LINKS — STRONG EVIDENCE OF MULTI-PAGE PAGINATION:")
-        lines.append("(Plain-numbered links like '2', '3', '4' sharing one href pattern. "
-                      "This site has multiple pages even though no 'Load More'/'Next' text exists.)")
-        for template, anchors in list(pagination_groups.items())[:5]:
-            sample = anchors[0]
-            classes = " ".join(sample.get("class", []))
-            href_prefix = template.split("{n}")[0]
-            path_prefix = urlparse(href_prefix).path or href_prefix
-            suggested_xpath = (
-                f"//a[contains(@href, '{path_prefix}') and "
-                f"translate(normalize-space(text()), '0123456789', '') = '']"
-            )
-            lines.append(
-                f'  href pattern "{template}" — {len(anchors)} page links found, '
-                f'e.g. <a class="{classes}" href="{sample["href"]}">{sample.get_text(strip=True)}</a>'
-            )
-            lines.append(
-                f"  SUGGESTED next_button_selector (use this verbatim or adapt it): {suggested_xpath}"
-            )
-        lines.append(
-            "If this section is non-empty, you MUST set load_strategy='pagination' — do not choose "
-            "single_page or load_more. IMPORTANT: a plain 'a[href*=\"...\"]' CSS substring selector is "
-            "NOT safe here — an event's own slug can coincidentally start with the same letters as the "
-            "page-link prefix (e.g. '/events/p' also matches an event slug like '/events/phoenix-run'). "
-            "Use the SUGGESTED XPath above (or an equivalent that also requires the link TEXT to be "
-            "purely numeric), since that's the only thing that reliably distinguishes a page-number "
-            "link from a same-prefixed event link."
-        )
-
-    return "\n".join(lines)[:max_chars]
+    return f"{reference_text}\n\n{critical_text}"
 
 
 def _build_system_prompt(url: str, markdown: str, html_hints: str, failure_note: str = "") -> str:
@@ -344,6 +369,17 @@ def generate_site_config(url: str, force_refresh: bool = False) -> Optional[Site
 
     html_hints = _build_structural_hints(html)
 
+    # Independent, non-LLM signal: if the raw HTML itself contains a numbered
+    # pagination pattern (plain-digit links sharing an href template), that's
+    # decisive evidence of multi-page pagination regardless of what Grok decides.
+    # Grok is told about this in the hints but doesn't always comply — this catches
+    # it directly rather than trusting compliance, since the Selenium validation for
+    # single_page only checks "does page 1 have events", which is trivially true
+    # even when a wrong strategy silently drops every page after the first.
+    has_numbered_pagination_evidence = bool(
+        _find_numbered_pagination_links(BeautifulSoup(html, "html.parser"))
+    ) if html else False
+
     client = OpenAI(
         api_key=GROK_API_KEY,
         base_url="https://api.x.ai/v1",
@@ -359,6 +395,20 @@ def generate_site_config(url: str, force_refresh: bool = False) -> Optional[Site
             failure_note = "Your previous response wasn't valid/complete JSON. Return ONLY the JSON object."
             continue
         last_cfg = cfg
+
+        if has_numbered_pagination_evidence and cfg.load_strategy != "pagination":
+            print(f"{datetime.now():%H:%M:%S} - Validation failed (attempt {attempt}/{max_attempts}): "
+                  f"chose load_strategy={cfg.load_strategy!r} but numbered pagination links were "
+                  f"detected in the real HTML")
+            failure_note = (
+                f"You chose load_strategy={cfg.load_strategy!r}, but the REAL ANCHOR / CANDIDATE NUMBERED "
+                f"PAGE LINKS section above clearly shows plain-numbered links (2, 3, 4, ...) sharing one "
+                f"href pattern — that is decisive evidence this site has multiple pages. A strategy that "
+                f"only reads page 1 would silently drop every event after it. You MUST set "
+                f"load_strategy='pagination' and use the SUGGESTED next_button_selector shown in that "
+                f"section (or an equivalent requiring the link text to be purely numeric)."
+            )
+            continue
 
         ok, message = validate_site_config(cfg)
         if ok:
