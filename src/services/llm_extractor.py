@@ -174,7 +174,7 @@ def _build_user_prompt(instructions: str, schema_properties: dict[str, Any], req
     return f"{instructions}\n\nJSON schema:\n{json.dumps(schema, indent=2)}"
 
 
-def _call_grok(system_prompt: str, user_prompt: str) -> dict[str, Any]:
+def _call_grok(system_prompt: str, user_prompt: str, max_tokens: int) -> dict[str, Any]:
     from openai import OpenAI
 
     client = OpenAI(api_key=settings.grok_api_key, base_url="https://api.x.ai/v1")
@@ -185,14 +185,19 @@ def _call_grok(system_prompt: str, user_prompt: str) -> dict[str, Any]:
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.0,
-        max_tokens=1200,
+        max_tokens=max_tokens,
         response_format={"type": "json_object"},
     )
     return json.loads(response.choices[0].message.content)
 
 
 def _call_anthropic(
-    system_prompt: str, user_prompt: str, schema_properties: dict[str, Any], required: list[str], tool_name: str
+    system_prompt: str,
+    user_prompt: str,
+    schema_properties: dict[str, Any],
+    required: list[str],
+    tool_name: str,
+    max_tokens: int,
 ) -> dict[str, Any]:
     import anthropic
 
@@ -204,7 +209,7 @@ def _call_anthropic(
     }
     response = client.messages.create(
         model=settings.anthropic_model,
-        max_tokens=1200,
+        max_tokens=max_tokens,
         system=system_prompt,
         tools=[tool],
         tool_choice={"type": "tool", "name": tool_name},
@@ -217,11 +222,16 @@ def _call_anthropic(
 
 
 def _run_llm(
-    system_prompt: str, user_prompt: str, schema_properties: dict[str, Any], required: list[str], tool_name: str
+    system_prompt: str,
+    user_prompt: str,
+    schema_properties: dict[str, Any],
+    required: list[str],
+    tool_name: str,
+    max_tokens: int = 1200,
 ) -> dict[str, Any]:
     if settings.llm_provider == "anthropic":
-        return _call_anthropic(system_prompt, user_prompt, schema_properties, required, tool_name)
-    return _call_grok(system_prompt, user_prompt)
+        return _call_anthropic(system_prompt, user_prompt, schema_properties, required, tool_name, max_tokens)
+    return _call_grok(system_prompt, user_prompt, max_tokens)
 
 
 def extract_event_fields(url: str, markdown: str) -> dict[str, Any] | None:
@@ -320,9 +330,20 @@ def analyze_listing_page(listing_url: str, markdown: str, candidate_links: list[
         "Candidate same-site links found on this page:\n" + "\n".join(candidate_links)
     )
     user_prompt = _build_user_prompt(instructions, _LISTING_PAGE_SCHEMA_PROPERTIES, _LISTING_PAGE_REQUIRED)
+    # The response has to echo back up to len(candidate_links) full URLs into
+    # event_urls - a fixed cap sized for a handful of short URLs (fine for
+    # discover_listing_urls/detect_load_more) silently truncates the JSON
+    # for listing pages with many/long URLs (seen in practice: 54 long URLs
+    # blew past 1200 tokens and cut off mid-response).
+    max_tokens = min(8000, 800 + len(candidate_links) * 60)
     try:
         fields = _run_llm(
-            _LISTING_PAGE_SYSTEM_PROMPT, user_prompt, _LISTING_PAGE_SCHEMA_PROPERTIES, _LISTING_PAGE_REQUIRED, "analyze_listing_page"
+            _LISTING_PAGE_SYSTEM_PROMPT,
+            user_prompt,
+            _LISTING_PAGE_SCHEMA_PROPERTIES,
+            _LISTING_PAGE_REQUIRED,
+            "analyze_listing_page",
+            max_tokens=max_tokens,
         )
     except Exception as e:
         print(f"{datetime.now():%H:%M:%S} - analyze_listing_page failed for {listing_url}: {type(e).__name__}: {e}")

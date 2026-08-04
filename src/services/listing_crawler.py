@@ -85,10 +85,25 @@ def _strip_www(netloc: str) -> str:
     return netloc[4:] if netloc.startswith("www.") else netloc
 
 
+def _core_label(netloc: str) -> str:
+    """First label of a (www-stripped) domain - approximates an organiser's
+    own brand name (e.g. 'zigzagrunning' from 'zigzagrunning.co.uk') without
+    needing a public-suffix list."""
+    return netloc.split(".")[0]
+
+
 def _same_site(url: str, homepage_netloc: str) -> bool:
     netloc = _strip_www(urlparse(url).netloc.lower())
     homepage_netloc = _strip_www(homepage_netloc.lower())
-    return netloc == homepage_netloc or netloc.endswith("." + homepage_netloc)
+    if netloc == homepage_netloc or netloc.endswith("." + homepage_netloc):
+        return True
+    # Some organisers' actual event pages live on a third-party ticketing
+    # platform under a branded subdomain (e.g. zigzagrunning.eventrac.co.uk
+    # for homepage zigzagrunning.co.uk) rather than the organiser's own
+    # domain - a domain/subdomain match alone misses these entirely. Treat it
+    # as the same site if the candidate's leftmost label is the organiser's
+    # own brand name, regardless of what domain it's a subdomain of.
+    return _core_label(netloc) == _core_label(homepage_netloc)
 
 
 def filter_candidate_links(links: list[str], homepage_url: str) -> list[str]:
