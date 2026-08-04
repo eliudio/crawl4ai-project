@@ -11,15 +11,22 @@ loading strategies via Selenium). Instead:
   detail pages by the LLM (llm_extractor.analyze_listing_page) - the
   heuristic pass alone can't tell an event link apart from e.g. /about or
   /results on the same domain.
-- The same LLM call also classifies how the rest of a listing's events are
-  reached: a distinct next-page URL (numbered pagination - followed by
-  looping `_crawl_one_listing_url` with each next_page_url in turn, capped at
-  _MAX_LISTING_PAGES), or a same-URL "load more" affordance. The latter is
-  handled either by clicking a selector the LLM picks out from the page's own
-  HTML each time (most "Load more" buttons are click-to-AJAX, not
-  scroll-triggered - scrolling past them does nothing), or by a scroll+wait
-  sequence for genuine infinite-scroll pages with no distinct clickable
-  element.
+- The rest of a listing's events are reached one of three genuinely
+  different ways, detected via llm_extractor.detect_load_more and handled by
+  three separate code paths rather than one shared mechanism (conflating
+  them is what caused real bugs - see git history):
+    1. A distinct next-page URL (real numbered pagination with an actual
+       href) - followed by looping `_crawl_one_listing_url` with each
+       next_page_url in turn, capped at _MAX_LISTING_PAGES.
+    2. A same-URL "load more"/infinite-scroll affordance that APPENDS more
+       items below what's already shown - handled by _analyze_page's
+       round-loop, clicking (or scrolling) and re-checking until pressing
+       further surfaces nothing new.
+    3. A same-URL numbered/"Next" pager with no real href that REPLACES the
+       currently shown items each press (as opposed to appending) - handled
+       by _crawl_paginated_same_url, which extracts and unions each page's
+       own confirmed events separately, since only reading the final press's
+       snapshot (fine for case 2) would silently drop every earlier page.
 
 That's the trade that makes this scale to hundreds of organisers without a
 bespoke config *maintained by us* per site - the selector is derived fresh
@@ -28,10 +35,13 @@ from the live page each crawl rather than hand-written and stored; phase 2
 later if needed.
 """
 
+import re
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
+from bs4 import BeautifulSoup
+from markdownify import markdownify as html_to_markdown
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -79,6 +89,113 @@ def _click_actions(selector: str, presses: int) -> list[dict]:
         actions.append({"type": "click", "selector": selector})
         actions.append({"type": "wait", "milliseconds": _LOAD_MORE_WAIT_MS})
     return actions
+
+
+_NAV_TAGS = ("script", "style", "nav", "header", "footer", "aside", "noscript")
+
+
+def _parse_paginated_snapshot(html: str, base_url: str) -> tuple[str, list[str]]:
+    """
+    Firecrawl's "scrape" action (used by scrape_paginated for each pager
+    page in the "paginate" case) only ever returns raw html, not the
+    markdown/links a normal scrape() call gets - confirmed this isn't
+    something the action can be asked for (passing `formats` on a "scrape"
+    action is silently accepted but has no effect). Handing that raw html
+    straight to the LLM as-is is what cost ~$10 of Grok usage crawling one
+    17-page site: every <script>/<style>/attribute byte gets billed as input
+    tokens, repeated once per page. Converting it to real markdown ourselves
+    (markdownify) gets analyze_listing_page the same kind of input it gets
+    everywhere else in this file (Firecrawl's own markdown, for every
+    non-paginated case) at a small fraction of the size, rather than passing
+    it something raw and HTML-shaped only for this one code path.
+
+    Returns (markdown, links).
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    links = [urljoin(base_url, a["href"]) for a in soup.find_all("a", href=True)]
+
+    for tag in soup.find_all(_NAV_TAGS):
+        tag.decompose()
+
+    markdown = html_to_markdown(str(soup), heading_style="ATX", strip=["script", "style"])
+    markdown = "\n".join(line for line in markdown.splitlines() if line.strip())
+    return markdown, links
+
+
+_PAGINATE_COUNT_PATTERN = re.compile(
+    r"(\d[\d,]*)\s*-\s*(\d[\d,]*)\s*(?:out of|of)\s*(\d[\d,]*)", re.IGNORECASE
+)
+
+
+def _estimate_total_pages(markdown: str) -> int | None:
+    """
+    Best-effort read of a "Showing 1-20 out of 339"-style count line, common
+    on faceted-search listing pages, to size the click chain in
+    _crawl_paginated_same_url up front. Returns None if no such line is
+    found - the caller falls back to a fixed safety cap instead.
+    """
+    match = _PAGINATE_COUNT_PATTERN.search(markdown)
+    if not match:
+        return None
+    start, end, total = (int(g.replace(",", "")) for g in match.groups())
+    per_page = end - start + 1
+    if per_page <= 0 or total <= 0:
+        return None
+    return -(-total // per_page)  # ceil division
+
+
+def _crawl_paginated_same_url(
+    page_url: str, homepage_url: str, selector: str, first_markdown: str, first_links: list[str]
+) -> tuple[list[str], list[str]]:
+    """
+    Case 3 (see module docstring): a numbered/"Next" pager that swaps this
+    same URL's visible items via JavaScript with no real href per page,
+    unlike case 2's "Load more" which grows the same page. Because each
+    press REPLACES rather than adds, each page's own confirmed events have
+    to be extracted and unioned in separately - only reading the last
+    press's snapshot (as case 2's round-loop does) would silently drop every
+    earlier page.
+
+    Drives the clicking via firecrawl_client.scrape_paginated - one chained
+    browser session that clicks+captures repeatedly - rather than replaying
+    N clicks from scratch per page the way case 2 does (which doesn't scale
+    to a pager with many pages; see scrape_paginated's docstring for the
+    action-count ceiling this runs into instead).
+
+    Returns (event_urls, all_candidates_seen_across_every_page).
+    """
+    candidates = filter_candidate_links(first_links, homepage_url)
+    analysis = llm_extractor.analyze_listing_page(page_url, first_markdown, candidates)
+    confirmed: set[str] = set(analysis["event_urls"])
+    all_candidates: set[str] = set(candidates)
+    print(f"DEBUG paginate page 1: {len(candidates)} candidates, {len(confirmed)} confirmed")
+
+    total_pages = _estimate_total_pages(first_markdown)
+    remaining = min(total_pages - 1, _MAX_LISTING_PAGES - 1) if total_pages else _MAX_LISTING_PAGES - 1
+    print(f"DEBUG paginate: estimated_total_pages={total_pages} clicks_planned={remaining}")
+    if remaining <= 0:
+        return sorted(confirmed), sorted(all_candidates)
+
+    snapshots = firecrawl_client.scrape_paginated(page_url, selector, remaining)
+
+    for i, snapshot in enumerate(snapshots, start=2):
+        page_html = snapshot.get("html", "")
+        page_text, page_links = _parse_paginated_snapshot(page_html, page_url)
+        page_candidates = filter_candidate_links(page_links, homepage_url)
+        all_candidates |= set(page_candidates)
+        if not page_candidates:
+            print(f"DEBUG paginate page {i}: no candidates, stopping")
+            break
+        page_analysis = llm_extractor.analyze_listing_page(page_url, page_text, page_candidates)
+        page_confirmed = set(page_analysis["event_urls"])
+        new = page_confirmed - confirmed
+        print(f"DEBUG paginate page {i}: {len(page_candidates)} candidates, {len(page_confirmed)} confirmed, {len(new)} new")
+        if not new:
+            print(f"DEBUG paginate page {i}: nothing new, stopping")
+            break
+        confirmed |= new
+
+    return sorted(confirmed), sorted(all_candidates)
 
 
 def _strip_www(netloc: str) -> str:
@@ -145,31 +262,26 @@ def _analyze_page(page_url: str, homepage_url: str) -> tuple[list[str], list[str
     Scrape one listing page and analyze it. Returns (event_urls, all_candidates,
     next_page_url).
 
-    If more events are reachable only by interacting with this same URL - a
-    "load more" button, or numbered/"Next" pagination controls with no real
-    href to follow - they add to THIS SAME page rather than navigating
-    anywhere, so the page as first loaded is never the full page. This is a
-    two-phase process, deliberately using two different LLM calls so event
-    extraction never runs on a not-yet-fully-loaded page: phase 1 repeatedly
-    calls llm_extractor.detect_load_more - a cheap probe that only checks "is
-    there still a load-more affordance, and if it's a real clickable element
-    (as opposed to plain infinite scroll), what CSS selector targets it" -
-    and presses it (click if there's a selector; scroll for genuine infinite
-    scroll, since a real 'Load more' button - e.g. WordPress plugins commonly
-    used by these sites - fires an AJAX request on click and does nothing on
-    scroll) until it reports the affordance is gone. Only then does phase 2
-    call llm_extractor.analyze_listing_page exactly once, to actually read
-    event_urls/next_page_url off that now fully-loaded page. Each scrape()
-    call is a fresh page load though (no persistent browser session across
-    calls), so "press/scroll further" means re-scraping with progressively
-    more clicks/scroll, not resuming a previous one.
+    llm_extractor.detect_load_more classifies which of case 2 or case 3 (see
+    module docstring) applies, if either - "append" (Load More/infinite
+    scroll, grows the same page) or "paginate" (numbered/"Next" pager, no
+    real href, replaces the same page's items). "paginate" is delegated
+    entirely to _crawl_paginated_same_url, which does its own per-page
+    analysis and union (necessary since replacing content means only the
+    final press's snapshot would otherwise survive). "append" and "none"
+    share the rest of this function: repeatedly press (click if there's a
+    selector; scroll for genuine infinite scroll) and re-probe until the
+    affordance is gone, then run llm_extractor.analyze_listing_page exactly
+    once on the now fully-loaded page. Each scrape() call is a fresh page
+    load though (no persistent browser session across calls), so "press
+    further" means re-scraping with progressively more clicks/scroll, not
+    resuming a previous one.
 
-    The probe alone isn't trustworthy as a stop condition: plugins (e.g. Divi
-    Machine's "Load more", seen on these sites) often leave "load more is
-    enabled for this archive" markers in the DOM (a container attribute, the
-    button's own markup left in place) that don't reflect whether there's
+    The probe alone isn't trustworthy as a stop condition for "append": some
+    plugins (e.g. Divi Machine's "Load more") leave "load more is enabled for
+    this archive" markers in the DOM that don't reflect whether there's
     currently anything left to load, so the LLM can keep reporting
-    has_more_via_interaction=true forever even once every event is already
+    interaction_type="append" forever even once every event is already
     showing. The actual stop condition is therefore whether pressing again
     surfaced any link not already seen - if not, the page has genuinely
     stopped changing and we treat it as exhausted regardless of what the
@@ -179,7 +291,7 @@ def _analyze_page(page_url: str, homepage_url: str) -> tuple[list[str], list[str
     try:
         markdown, links, html = firecrawl_client.scrape(page_url, want_links=True, want_html=True)
         probe = llm_extractor.detect_load_more(page_url, html)
-        seen_links = set(links)
+        interaction_type = probe["interaction_type"]
         # Fixed at round 0 and never replaced: each later round reloads the page from
         # scratch and replays `round_num` clicks against it. Re-probing the post-click
         # HTML each round can report a different selector (some "load more" plugins add
@@ -187,12 +299,20 @@ def _analyze_page(page_url: str, homepage_url: str) -> tuple[list[str], list[str
         # only exists on the already-clicked DOM, not on the next round's fresh load -
         # using it there clicks nothing and silently regresses to the unclicked page.
         load_more_selector = probe["load_more_selector"]
-        print(f"DEBUG round 0: len(links)={len(links)} has_more_via_interaction={probe['has_more_via_interaction']} selector={load_more_selector!r}")
+        print(f"DEBUG round 0: len(links)={len(links)} interaction_type={interaction_type!r} selector={load_more_selector!r}")
         for url in links:
             print(f"DEBUG round 0 link: {url!r}")
 
+        if interaction_type == "paginate" and load_more_selector:
+            event_urls, candidates = _crawl_paginated_same_url(page_url, homepage_url, load_more_selector, markdown, links)
+            print(f"before return: len(links)={len(event_urls)} len(candidates)={len(candidates)} (paginate)")
+            # A JS-driven same-URL pager has no real href to a further page -
+            # every reachable page has already been walked above.
+            return event_urls, candidates, None
+
+        seen_links = set(links)
         round_num = 0
-        while probe["has_more_via_interaction"] and round_num < _LOAD_MORE_MAX_ROUNDS:
+        while interaction_type == "append" and round_num < _LOAD_MORE_MAX_ROUNDS:
             round_num += 1
             if load_more_selector:
                 actions = _click_actions(load_more_selector, presses=round_num)
@@ -234,7 +354,8 @@ def _analyze_page(page_url: str, homepage_url: str) -> tuple[list[str], list[str
             seen_links |= new_links
 
             probe = llm_extractor.detect_load_more(page_url, html)
-            print(f"DEBUG round {round_num}: probe after press -> has_more_via_interaction={probe['has_more_via_interaction']} selector={probe['load_more_selector']!r} (selector not used - keeping round 0's)")
+            interaction_type = probe["interaction_type"]
+            print(f"DEBUG round {round_num}: probe after press -> interaction_type={interaction_type!r} selector={probe['load_more_selector']!r} (selector not used - keeping round 0's)")
 
         # Only now, on the fully-loaded (or round-capped) page, actually read events.
         print(f"before filter_candidate_links: len(links)={len(links)}")

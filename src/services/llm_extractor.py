@@ -97,48 +97,77 @@ _LISTING_PAGE_SYSTEM_PROMPT = (
 )
 
 _LOAD_MORE_SCHEMA_PROPERTIES: dict[str, Any] = {
-    "has_more_via_interaction": {
-        "type": "boolean",
+    "interaction_type": {
+        "type": "string",
+        "enum": ["none", "append", "paginate"],
         "description": (
-            "True if there are more events beyond what's currently shown, reachable "
-            "only by interacting with THIS SAME url rather than following a real link "
-            "- either a 'Load more' / 'Show more' / 'View more' button, OR numbered "
-            "page / 'Next' pagination controls that update the list via JavaScript "
-            "without a distinct URL to link to (no real href). False if this genuinely "
-            "is all the events, or if more is only reachable via a real link elsewhere."
+            "How more events beyond what's currently shown, if any, are reached on "
+            "THIS SAME url (as opposed to following a real link elsewhere). These are "
+            "two fundamentally different behaviours, not variants of one thing - pick "
+            "carefully:\n"
+            "'append' - a 'Load more' / 'Show more' / 'View more' button (or plain "
+            "infinite scroll) that ADDS more items underneath the ones already shown - "
+            "the current items stay visible and the list grows.\n"
+            "'paginate' - numbered page / 'Next' controls that REPLACE the currently "
+            "shown items with a different set (the previous items disappear) - no real "
+            "href, just a JS-driven pager.\n"
+            "'none' - this genuinely is all the events, or more is only reachable via "
+            "a real link elsewhere (handled separately as next_page_url, not here)."
         ),
     },
     "load_more_selector": {
         "type": ["string", "null"],
         "description": (
-            "Only meaningful when has_more_via_interaction is true. If the HTML shows a "
-            "distinct clickable element for loading more (a 'Load more' / 'Show more' / "
-            "'View more' button, or a numbered/'Next' control with no real href), a CSS "
-            "selector built from its actual class or id attribute in the HTML that "
-            "uniquely targets that element (e.g. '.load-more-btn' or '#load-more'). Null "
-            "if has_more_via_interaction is false, or if more content appears via plain "
-            "infinite scroll with no distinct element to click."
+            "Only meaningful when interaction_type is 'append' or 'paginate'. A CSS "
+            "selector, built from real class/id attributes in the HTML, that uniquely "
+            "targets the SPECIFIC interactive control to click - never a wrapper "
+            "containing multiple clickable things. This matters most for 'paginate': "
+            "a numbered pager is usually one wrapping element (e.g. a <ul> or <nav>) "
+            "containing several page-number buttons/links plus a 'next' arrow - a "
+            "click lands at the CENTER of whatever selector is given, so targeting "
+            "the wrapper hits an arbitrary page number instead of 'next', causing "
+            "erratic non-sequential jumps instead of stepping forward one page at a "
+            "time. Always drill down to the one element that specifically means "
+            "'next' - e.g. a <button>/<a> whose own class, aria-label, or title "
+            "contains 'next' (not just a numbered page-item). If no such "
+            "specifically-'next' element exists in the HTML, return null rather than "
+            "a wrapper or a specific page-number button. Null also when "
+            "interaction_type is 'none', or content appears via plain infinite scroll "
+            "with no distinct element to click."
         ),
     },
 }
-_LOAD_MORE_REQUIRED = ["has_more_via_interaction", "load_more_selector"]
+_LOAD_MORE_REQUIRED = ["interaction_type", "load_more_selector"]
 
 _LOAD_MORE_SYSTEM_PROMPT = (
     "You are inspecting the raw HTML of a listing page to check for ONE thing: is "
     "there a 'load more'-style affordance - a button/control that reveals more items "
     "on THIS SAME page (or without a real href), as opposed to a normal link to "
-    "another page. If so, and it's a distinct clickable element (not plain infinite "
-    "scroll), give a CSS selector for it built from its real class/id in the HTML - "
-    "never invent one."
+    "another page. Two fundamentally different behaviours can look superficially "
+    "similar in the markup, so tell them apart carefully: a button/infinite-scroll "
+    "that APPENDS more items below the current ones (interaction_type 'append'), "
+    "versus numbered/'Next' controls that REPLACE the current items with a different "
+    "set (interaction_type 'paginate'). If either applies and it's a distinct "
+    "clickable element (not plain infinite scroll), give a CSS selector for it built "
+    "from its real class/id in the HTML - never invent one, and never select a "
+    "wrapper/container that holds several clickable items (e.g. a whole pagination "
+    "widget) - always the one specific control that means 'next'."
 )
 
 # Raw HTML can be large even after Firecrawl's own tag exclusion, and a
-# "load more"-style button's markup sits after all the (often verbose) event
-# cards - a plain head truncation reliably cuts it off before the LLM ever
-# sees it. Cap what gets sent, but build the excerpt around wherever a
-# load-more keyword actually appears rather than just the start of the page.
+# "load more"-style button's markup (or a numbered pager's) sits after all
+# the (often verbose) event cards - a plain head truncation reliably cuts it
+# off before the LLM ever sees it. Cap what gets sent, but build the excerpt
+# around wherever a load-more/pagination keyword actually appears rather than
+# just the start of the page. Covers both interaction_type cases - "append"
+# keywords (load more/show more) and "paginate" keywords (numbered/"Next"
+# pagers, e.g. "pagination"-class widgets or aria-label="next page") - since
+# missing either here means the LLM never even sees the affordance to classify.
 _MAX_HTML_CHARS = 60_000
-_LOAD_MORE_KEYWORDS = ("load more", "loadmore", "load-more", "show more", "view more")
+_LOAD_MORE_KEYWORDS = (
+    "load more", "loadmore", "load-more", "show more", "view more",
+    "pagination", "next page", "page-next", "rel=\"next\"",
+)
 
 
 def _load_more_excerpt(html: str) -> str:
@@ -282,15 +311,22 @@ def discover_listing_urls(homepage_url: str, markdown: str, candidate_links: lis
 def detect_load_more(listing_url: str, html: str) -> dict[str, Any]:
     """
     Cheap probe, called BEFORE any event extraction: does this page currently
-    have a 'load more' style affordance, and if it's a real clickable element
-    (as opposed to plain infinite scroll), what CSS selector targets it? Takes
-    raw `html` (not markdown, which strips class/id attributes) so a selector
-    can actually be derived. This is what the listing crawler's press-loop
-    calls on every round to decide whether/how to keep pressing - event
-    extraction (analyze_listing_page) only runs once, after this reports
-    has_more_via_interaction=false and the page is considered fully loaded.
+    have a 'load more' style affordance, and if so, does clicking it APPEND
+    more items to what's already shown, or REPLACE them with a different page
+    of items - and if it's a real clickable element (as opposed to plain
+    infinite scroll), what CSS selector targets it? Takes raw `html` (not
+    markdown, which strips class/id attributes) so a selector can actually be
+    derived.
 
-    Returns {"has_more_via_interaction": bool, "load_more_selector": str | None}.
+    These are two distinct cases handled by different code paths in
+    listing_crawler.py, not variants of one mechanism: 'append' (Load
+    More/infinite scroll) grows the same page and is safe to just keep
+    pressing and re-checking; 'paginate' (numbered/'Next' pager, no real
+    href) swaps the page's contents each press, so each page's events have to
+    be extracted and unioned separately rather than only reading the last
+    press's snapshot.
+
+    Returns {"interaction_type": "none" | "append" | "paginate", "load_more_selector": str | None}.
     """
     print(f"{datetime.now():%H:%M:%S} - detect_load_more ({settings.llm_provider}): {listing_url}")
     instructions = f"Listing page URL: {listing_url}\n\nRaw HTML:\n{_load_more_excerpt(html)}"
@@ -299,10 +335,14 @@ def detect_load_more(listing_url: str, html: str) -> dict[str, Any]:
         fields = _run_llm(_LOAD_MORE_SYSTEM_PROMPT, user_prompt, _LOAD_MORE_SCHEMA_PROPERTIES, _LOAD_MORE_REQUIRED, "detect_load_more")
     except Exception as e:
         print(f"{datetime.now():%H:%M:%S} - detect_load_more failed for {listing_url}: {type(e).__name__}: {e}")
-        return {"has_more_via_interaction": False, "load_more_selector": None}
+        return {"interaction_type": "none", "load_more_selector": None}
+
+    interaction_type = fields.get("interaction_type")
+    if interaction_type not in ("append", "paginate"):
+        interaction_type = "none"
 
     return {
-        "has_more_via_interaction": bool(fields.get("has_more_via_interaction")),
+        "interaction_type": interaction_type,
         "load_more_selector": fields.get("load_more_selector") or None,
     }
 
