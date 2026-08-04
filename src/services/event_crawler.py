@@ -22,36 +22,16 @@ def _hash(markdown: str) -> str:
     return hashlib.sha256(markdown.encode("utf-8")).hexdigest()
 
 
-def preview_event(event_url: str) -> dict | None:
+def crawl_event(
+    session: Session, organiser_id: int, event_url: str, check_mode: str = "hash-check"
+) -> Event | None:
     """
-    Dry-run counterpart to crawl_event: fetches the page and runs extraction,
-    but never touches the database (no Event upsert, no CrawlRun). Prints the
-    extracted fields and returns them.
+    check_mode "hash-check" (default): always fetch the page, but skip
+    re-extraction if its content hash matches what's stored - catches changed
+    events, not just new ones.
+    check_mode "url-check": skip entirely (no fetch) if the URL is already in
+    the database, regardless of whether the page changed since.
     """
-    if not robots.is_allowed(event_url):
-        print(f"  [dry-run] {event_url}: disallowed by robots.txt")
-        return None
-
-    try:
-        markdown, _links, _html = firecrawl_client.scrape(event_url, want_links=False)
-        fields = llm_extractor.extract_event_fields(event_url, markdown)
-    except requests.exceptions.ConnectionError:
-        raise  # can't reach Firecrawl at all - stop the run rather than retrying every remaining URL
-    except Exception as e:
-        print(f"  [dry-run] {event_url}: FAILED ({type(e).__name__}: {e})")
-        return None
-
-    if fields is None:
-        print(f"  [dry-run] {event_url}: extraction returned no fields")
-        return None
-
-    print(f"  [dry-run] {event_url}:")
-    for key, value in fields.items():
-        print(f"    {key}: {value}")
-    return fields
-
-
-def crawl_event(session: Session, organiser_id: int, event_url: str) -> Event | None:
     now = datetime.now(timezone.utc)
     run = CrawlRun(
         run_type=CrawlRunType.EVENT,
@@ -68,13 +48,21 @@ def crawl_event(session: Session, organiser_id: int, event_url: str) -> Event | 
         session.add(run)
         return None
 
+    existing = session.scalar(select(Event).where(Event.url == event_url))
+
+    if check_mode == "url-check" and existing:
+        existing.last_seen_at = now
+        run.status = CrawlStatus.SKIPPED
+        run.detail = "url already exists, skipped (url-check)"
+        run.finished_at = datetime.now(timezone.utc)
+        session.add(run)
+        return existing
+
     try:
         markdown, _links, _html = firecrawl_client.scrape(event_url, want_links=False)
         content_hash = _hash(markdown)
 
-        existing = session.scalar(select(Event).where(Event.url == event_url))
-
-        if existing and existing.content_hash == content_hash:
+        if check_mode == "hash-check" and existing and existing.content_hash == content_hash:
             existing.last_seen_at = now
             existing.last_crawled_at = now
             run.status = CrawlStatus.SUCCESS

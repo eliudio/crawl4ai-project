@@ -185,7 +185,7 @@ def _call_grok(system_prompt: str, user_prompt: str) -> dict[str, Any]:
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.0,
-        max_tokens=600,
+        max_tokens=1200,
         response_format={"type": "json_object"},
     )
     return json.loads(response.choices[0].message.content)
@@ -204,7 +204,7 @@ def _call_anthropic(
     }
     response = client.messages.create(
         model=settings.anthropic_model,
-        max_tokens=600,
+        max_tokens=1200,
         system=system_prompt,
         tools=[tool],
         tool_choice={"type": "tool", "name": tool_name},

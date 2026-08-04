@@ -61,7 +61,7 @@ prototype code elsewhere in `src/`:
 #### setup locally
 
 1. Download, install and run docker desktop
-2. Install Firecrawl: 
+2. Install Firecrawl: (self hosting not used). TO BE DELETED
 ```
 C:\src
 mkdir firecrawl2 
@@ -82,13 +82,12 @@ cp src/services/.env.example src/services/.env
 ```
 Provide values for
 * DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/events
-* FIRECRAWL_API_URL=http://localhost:3002
 * GROK_API_KEY=your grok api key
 
 #### run locally
 
 1. Start docker desktop on your laptop
-2. Run firecrawl
+2. Run firecrawl (self hosting not used). TO BE DELETED
 ```
 cd C:\src\firecrawl2\firecrawl
 docker-compose up

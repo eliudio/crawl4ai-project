@@ -51,13 +51,19 @@ _JUNK_SUBSTRINGS = [
 _MAX_LISTING_PAGES = 20
 _LOAD_MORE_MAX_ROUNDS = 4
 _LOAD_MORE_SCROLL_STEP_INCREMENT = 6
+# AJAX-backed "load more" plugins (e.g. Divi Machine) fire a real
+# wp-admin/admin-ajax.php request and re-render on response - 1500ms was
+# measured too short (0 new links) on a live site where the round trip +
+# render reliably needs ~3s; 4000ms leaves margin without hurting much on
+# sites that resolve faster.
+_LOAD_MORE_WAIT_MS = 4000
 
 
 def _scroll_actions(steps: int) -> list[dict]:
     actions: list[dict] = []
     for _ in range(steps):
         actions.append({"type": "scroll", "direction": "down"})
-        actions.append({"type": "wait", "milliseconds": 1500})
+        actions.append({"type": "wait", "milliseconds": _LOAD_MORE_WAIT_MS})
     return actions
 
 
@@ -71,7 +77,7 @@ def _click_actions(selector: str, presses: int) -> list[dict]:
     actions: list[dict] = []
     for _ in range(presses):
         actions.append({"type": "click", "selector": selector})
-        actions.append({"type": "wait", "milliseconds": 1500})
+        actions.append({"type": "wait", "milliseconds": _LOAD_MORE_WAIT_MS})
     return actions
 
 
@@ -155,33 +161,86 @@ def _analyze_page(page_url: str, homepage_url: str) -> tuple[list[str], list[str
     probe says. _LOAD_MORE_MAX_ROUNDS is a secondary safety valve on top of
     that, not a tuning knob.
     """
-    markdown, links, html = firecrawl_client.scrape(page_url, want_links=True, want_html=True)
-    probe = llm_extractor.detect_load_more(page_url, html)
-    seen_links = set(links)
-
-    round_num = 0
-    while probe["has_more_via_interaction"] and round_num < _LOAD_MORE_MAX_ROUNDS:
-        round_num += 1
-        if probe["load_more_selector"]:
-            actions = _click_actions(probe["load_more_selector"], presses=round_num)
-        else:
-            steps = _LOAD_MORE_SCROLL_STEP_INCREMENT * (round_num + 1)
-            actions = _scroll_actions(steps)
-
-        markdown, links, html = firecrawl_client.scrape(
-            page_url, want_links=True, want_html=True, actions=actions
-        )
-
-        if not (set(links) - seen_links):
-            break  # pressing further surfaced nothing new - exhausted, whatever the probe claims
-        seen_links |= set(links)
-
+    try:
+        markdown, links, html = firecrawl_client.scrape(page_url, want_links=True, want_html=True)
         probe = llm_extractor.detect_load_more(page_url, html)
+        seen_links = set(links)
+        # Fixed at round 0 and never replaced: each later round reloads the page from
+        # scratch and replays `round_num` clicks against it. Re-probing the post-click
+        # HTML each round can report a different selector (some "load more" plugins add
+        # an "active"/"loading" class to the button once clicked), but that selector
+        # only exists on the already-clicked DOM, not on the next round's fresh load -
+        # using it there clicks nothing and silently regresses to the unclicked page.
+        load_more_selector = probe["load_more_selector"]
+        print(f"DEBUG round 0: len(links)={len(links)} has_more_via_interaction={probe['has_more_via_interaction']} selector={load_more_selector!r}")
+        for url in links:
+            print(f"DEBUG round 0 link: {url!r}")
 
-    # Only now, on the fully-loaded (or round-capped) page, actually read events.
-    candidates = filter_candidate_links(links, homepage_url)
-    analysis = llm_extractor.analyze_listing_page(page_url, markdown, candidates)
-    return analysis["event_urls"], candidates, analysis["next_page_url"]
+        round_num = 0
+        while probe["has_more_via_interaction"] and round_num < _LOAD_MORE_MAX_ROUNDS:
+            round_num += 1
+            if load_more_selector:
+                actions = _click_actions(load_more_selector, presses=round_num)
+                print(f"DEBUG round {round_num}: clicking {load_more_selector!r} x{round_num}")
+            else:
+                steps = _LOAD_MORE_SCROLL_STEP_INCREMENT * (round_num + 1)
+                actions = _scroll_actions(steps)
+                print(f"DEBUG round {round_num}: scrolling x{steps}")
+
+            try:
+                round_markdown, round_links, round_html = firecrawl_client.scrape(
+                    page_url, want_links=True, want_html=True, actions=actions
+                )
+            except Exception as e:
+                # A later round replays *more* clicks than the last successful one
+                # (round_num clicks, from a fresh page load each time) - if the
+                # button/container is gone from the DOM once nothing's left to load
+                # (common: plugins hide it when exhausted), that extra click can
+                # itself throw (seen in practice as Firecrawl's own
+                # InternalServerError). That's a sign we're past the end, not a
+                # real failure - the previous round's links are already good, so
+                # fall back to them instead of discarding a page we already loaded
+                # correctly.
+                print(f"DEBUG round {round_num}: scrape failed ({e!r}), stopping and keeping previous round's {len(links)} links")
+                break
+
+            new_links = set(round_links) - seen_links
+            print(f"DEBUG round {round_num}: len(links)={len(round_links)} new_links={len(new_links)}")
+            for url in round_links:
+                print(f"DEBUG round {round_num} link: {'NEW ' if url in new_links else '    '}{url!r}")
+
+            if not new_links:
+                print(f"DEBUG round {round_num}: nothing new, breaking (keeping previous round's {len(links)} links)")
+                break  # pressing further surfaced nothing new - exhausted, whatever the probe claims
+
+            # Only now commit this round's (strictly better) result - a regressed round
+            # must never overwrite the better page we already have.
+            markdown, links, html = round_markdown, round_links, round_html
+            seen_links |= new_links
+
+            probe = llm_extractor.detect_load_more(page_url, html)
+            print(f"DEBUG round {round_num}: probe after press -> has_more_via_interaction={probe['has_more_via_interaction']} selector={probe['load_more_selector']!r} (selector not used - keeping round 0's)")
+
+        # Only now, on the fully-loaded (or round-capped) page, actually read events.
+        print(f"before filter_candidate_links: len(links)={len(links)}")
+        candidates = filter_candidate_links(links, homepage_url)
+        print(f"before analyze_listing_page: len(links)={len(links)} len(candidates)={len(candidates)}")
+        analysis = llm_extractor.analyze_listing_page(page_url, markdown, candidates)
+
+        missing = set(candidates) - set(analysis["event_urls"])
+        if missing:
+            print(f"DEBUG {page_url}: {len(candidates)} candidates, {len(analysis['event_urls'])} confirmed, {len(missing)} missing")
+            for url in missing:
+                slug = url.rstrip("/").split("/")[-1]
+                print(f"DEBUG   missing={url!r} slug_in_markdown={slug in markdown}")
+
+        links = analysis["event_urls"]
+        print(f"before return: len(links)={len(links)} len(candidates)={len(candidates)}")
+        return links, candidates, analysis["next_page_url"]
+
+    except Exception as e:
+        print(f"exception _analyze_page: {e}")
+        raise e
 
 
 def _crawl_one_listing_url(
