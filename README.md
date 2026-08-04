@@ -63,7 +63,6 @@ prototype code elsewhere in `src/`:
 1. Download, install and run docker desktop
 2. Install Firecrawl: 
 ```
-docker run -d --name events-db -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=events -p 5432:5432 postgres:16
 C:\src
 mkdir firecrawl2 
 cd C:\src\firecrawl2
@@ -71,7 +70,13 @@ git clone https://github.com/mendableai/firecrawl.git
 cd firecrawl
 npm install
 ```
-3. Install .env
+
+3. Install postgres
+```
+docker run -d --name events-db -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=events -p 5432:5432 postgres:16
+```
+
+4. Install .env
 ```
 cp src/services/.env.example src/services/.env
 ```
@@ -85,12 +90,16 @@ Provide values for
 1. Start docker desktop on your laptop
 2. Run firecrawl
 ```
-C:\src
-cd C:\src\firecrawl2
+cd C:\src\firecrawl2\firecrawl
 docker-compose up
 ```
 
-3. run service
+3. Run postgres
+```
+docker start events-db && docker ps --filter "name=events-db" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"```
+```
+
+4. run service
 ```
 cd src
 poetry run python -m services.local_runner --limit 3

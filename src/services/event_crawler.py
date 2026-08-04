@@ -10,6 +10,7 @@ organiser cheap.
 import hashlib
 from datetime import datetime, timezone
 
+import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -32,8 +33,10 @@ def preview_event(event_url: str) -> dict | None:
         return None
 
     try:
-        markdown, _links = firecrawl_client.scrape(event_url, want_links=False)
+        markdown, _links, _html = firecrawl_client.scrape(event_url, want_links=False)
         fields = llm_extractor.extract_event_fields(event_url, markdown)
+    except requests.exceptions.ConnectionError:
+        raise  # can't reach Firecrawl at all - stop the run rather than retrying every remaining URL
     except Exception as e:
         print(f"  [dry-run] {event_url}: FAILED ({type(e).__name__}: {e})")
         return None
@@ -66,7 +69,7 @@ def crawl_event(session: Session, organiser_id: int, event_url: str) -> Event | 
         return None
 
     try:
-        markdown, _links = firecrawl_client.scrape(event_url, want_links=False)
+        markdown, _links, _html = firecrawl_client.scrape(event_url, want_links=False)
         content_hash = _hash(markdown)
 
         existing = session.scalar(select(Event).where(Event.url == event_url))
@@ -113,6 +116,8 @@ def crawl_event(session: Session, organiser_id: int, event_url: str) -> Event | 
         run.finished_at = datetime.now(timezone.utc)
         session.add(run)
         return event
+    except requests.exceptions.ConnectionError:
+        raise  # can't reach Firecrawl at all - stop the run rather than retrying every remaining URL
     except Exception as e:
         run.detail = f"{type(e).__name__}: {e}"
         run.finished_at = datetime.now(timezone.utc)
