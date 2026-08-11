@@ -35,13 +35,10 @@ from the live page each crawl rather than hand-written and stored; phase 2
 later if needed.
 """
 
-import re
 from datetime import datetime, timezone
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import requests
-from bs4 import BeautifulSoup
-from markdownify import markdownify as html_to_markdown
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -65,7 +62,12 @@ _LOAD_MORE_SCROLL_STEP_INCREMENT = 6
 # wp-admin/admin-ajax.php request and re-render on response - 1500ms was
 # measured too short (0 new links) on a live site where the round trip +
 # render reliably needs ~3s; 4000ms leaves margin without hurting much on
-# sites that resolve faster.
+# sites that resolve faster. Also used for case 3's click-replay (see
+# _crawl_paginated_same_url) - tried giving intermediate clicks a shorter
+# wait there to cut cumulative time on deep pagers, but that broke content
+# correctness outright (a real site stopped advancing past its 5th page
+# instead of reaching its 16th) - a uniform generous wait is what's actually
+# proven to work, so this is the one wait used everywhere clicks replay.
 _LOAD_MORE_WAIT_MS = 4000
 
 
@@ -79,69 +81,16 @@ def _scroll_actions(steps: int) -> list[dict]:
 
 def _click_actions(selector: str, presses: int) -> list[dict]:
     """
-    Click a "load more"-style element `presses` times in one fresh page load
-    (there's no persistent browser session across separate scrape() calls, so
-    reaching "pressed 3 times" means clicking 3 times in a row here, not
-    resuming a previous click).
+    Click a "load more"/"next"-style element `presses` times in one fresh
+    page load (there's no persistent browser session across separate
+    scrape() calls, so reaching "pressed 3 times" means clicking 3 times in
+    a row here, not resuming a previous click).
     """
     actions: list[dict] = []
     for _ in range(presses):
         actions.append({"type": "click", "selector": selector})
         actions.append({"type": "wait", "milliseconds": _LOAD_MORE_WAIT_MS})
     return actions
-
-
-_NAV_TAGS = ("script", "style", "nav", "header", "footer", "aside", "noscript")
-
-
-def _parse_paginated_snapshot(html: str, base_url: str) -> tuple[str, list[str]]:
-    """
-    Firecrawl's "scrape" action (used by scrape_paginated for each pager
-    page in the "paginate" case) only ever returns raw html, not the
-    markdown/links a normal scrape() call gets - confirmed this isn't
-    something the action can be asked for (passing `formats` on a "scrape"
-    action is silently accepted but has no effect). Handing that raw html
-    straight to the LLM as-is is what cost ~$10 of Grok usage crawling one
-    17-page site: every <script>/<style>/attribute byte gets billed as input
-    tokens, repeated once per page. Converting it to real markdown ourselves
-    (markdownify) gets analyze_listing_page the same kind of input it gets
-    everywhere else in this file (Firecrawl's own markdown, for every
-    non-paginated case) at a small fraction of the size, rather than passing
-    it something raw and HTML-shaped only for this one code path.
-
-    Returns (markdown, links).
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    links = [urljoin(base_url, a["href"]) for a in soup.find_all("a", href=True)]
-
-    for tag in soup.find_all(_NAV_TAGS):
-        tag.decompose()
-
-    markdown = html_to_markdown(str(soup), heading_style="ATX", strip=["script", "style"])
-    markdown = "\n".join(line for line in markdown.splitlines() if line.strip())
-    return markdown, links
-
-
-_PAGINATE_COUNT_PATTERN = re.compile(
-    r"(\d[\d,]*)\s*-\s*(\d[\d,]*)\s*(?:out of|of)\s*(\d[\d,]*)", re.IGNORECASE
-)
-
-
-def _estimate_total_pages(markdown: str) -> int | None:
-    """
-    Best-effort read of a "Showing 1-20 out of 339"-style count line, common
-    on faceted-search listing pages, to size the click chain in
-    _crawl_paginated_same_url up front. Returns None if no such line is
-    found - the caller falls back to a fixed safety cap instead.
-    """
-    match = _PAGINATE_COUNT_PATTERN.search(markdown)
-    if not match:
-        return None
-    start, end, total = (int(g.replace(",", "")) for g in match.groups())
-    per_page = end - start + 1
-    if per_page <= 0 or total <= 0:
-        return None
-    return -(-total // per_page)  # ceil division
 
 
 def _crawl_paginated_same_url(
@@ -156,11 +105,22 @@ def _crawl_paginated_same_url(
     press's snapshot (as case 2's round-loop does) would silently drop every
     earlier page.
 
-    Drives the clicking via firecrawl_client.scrape_paginated - one chained
-    browser session that clicks+captures repeatedly - rather than replaying
-    N clicks from scratch per page the way case 2 does (which doesn't scale
-    to a pager with many pages; see scrape_paginated's docstring for the
-    action-count ceiling this runs into instead).
+    Replays clicks from a fresh page load each round (page N needs N-1
+    clicks), using firecrawl_client.scrape's normal formats=["markdown"]
+    path - Firecrawl's own conversion, with real main-content extraction,
+    not a raw-html workaround.
+
+    An earlier version of this tried to detect a URL query-param pattern
+    (some "Search UI"/Elastic-style pagers sync page state into the URL even
+    without a real href) and switch to fetching pages directly once found,
+    to avoid a growing click count. Dropped: in practice Firecrawl's
+    reported post-click URL was not just occasionally stale but sometimes
+    outright wrong (a single click reporting a URL for a page several
+    clicks ahead) - not a signal worth building on, even with a
+    confirmation check guarding against acting on it. Plain click-replay,
+    while it doesn't scale indefinitely (very deep pagers can hit a request
+    duration limit - seen in practice around 16 replayed clicks), is what's
+    actually proven correct.
 
     Returns (event_urls, all_candidates_seen_across_every_page).
     """
@@ -170,28 +130,30 @@ def _crawl_paginated_same_url(
     all_candidates: set[str] = set(candidates)
     print(f"DEBUG paginate page 1: {len(candidates)} candidates, {len(confirmed)} confirmed")
 
-    total_pages = _estimate_total_pages(first_markdown)
-    remaining = min(total_pages - 1, _MAX_LISTING_PAGES - 1) if total_pages else _MAX_LISTING_PAGES - 1
-    print(f"DEBUG paginate: estimated_total_pages={total_pages} clicks_planned={remaining}")
-    if remaining <= 0:
-        return sorted(confirmed), sorted(all_candidates)
+    for page_num in range(2, _MAX_LISTING_PAGES + 1):
+        presses = page_num - 1
+        actions = _click_actions(selector, presses=presses)
+        print(f"DEBUG paginate page {page_num}: clicking {selector!r} x{presses}")
+        try:
+            page_markdown, page_links, _html, _final_url = firecrawl_client.scrape(
+                page_url, want_links=True, actions=actions
+            )
+        except Exception as e:
+            print(f"DEBUG paginate page {page_num}: scrape failed ({e!r}), stopping")
+            break
 
-    snapshots = firecrawl_client.scrape_paginated(page_url, selector, remaining)
-
-    for i, snapshot in enumerate(snapshots, start=2):
-        page_html = snapshot.get("html", "")
-        page_text, page_links = _parse_paginated_snapshot(page_html, page_url)
         page_candidates = filter_candidate_links(page_links, homepage_url)
         all_candidates |= set(page_candidates)
         if not page_candidates:
-            print(f"DEBUG paginate page {i}: no candidates, stopping")
+            print(f"DEBUG paginate page {page_num}: no candidates, stopping")
             break
-        page_analysis = llm_extractor.analyze_listing_page(page_url, page_text, page_candidates)
+
+        page_analysis = llm_extractor.analyze_listing_page(page_url, page_markdown, page_candidates)
         page_confirmed = set(page_analysis["event_urls"])
         new = page_confirmed - confirmed
-        print(f"DEBUG paginate page {i}: {len(page_candidates)} candidates, {len(page_confirmed)} confirmed, {len(new)} new")
+        print(f"DEBUG paginate page {page_num}: {len(page_candidates)} candidates, {len(page_confirmed)} confirmed, {len(new)} new")
         if not new:
-            print(f"DEBUG paginate page {i}: nothing new, stopping")
+            print(f"DEBUG paginate page {page_num}: nothing new, stopping")
             break
         confirmed |= new
 
@@ -248,7 +210,7 @@ def _discover_listing_urls(session: Session, organiser: Organiser) -> list[str]:
     all three cases: events on the homepage itself, a single dedicated
     listing page, or several (e.g. per-category) listing pages.
     """
-    markdown, links, _html = firecrawl_client.scrape(organiser.homepage_url, want_links=True)
+    markdown, links, _html, _url = firecrawl_client.scrape(organiser.homepage_url, want_links=True)
     candidates = filter_candidate_links(links, organiser.homepage_url)
     discovered = llm_extractor.discover_listing_urls(organiser.homepage_url, markdown, candidates)
 
@@ -289,7 +251,7 @@ def _analyze_page(page_url: str, homepage_url: str) -> tuple[list[str], list[str
     that, not a tuning knob.
     """
     try:
-        markdown, links, html = firecrawl_client.scrape(page_url, want_links=True, want_html=True)
+        markdown, links, html, _url = firecrawl_client.scrape(page_url, want_links=True, want_html=True)
         probe = llm_extractor.detect_load_more(page_url, html)
         interaction_type = probe["interaction_type"]
         # Fixed at round 0 and never replaced: each later round reloads the page from
@@ -323,7 +285,7 @@ def _analyze_page(page_url: str, homepage_url: str) -> tuple[list[str], list[str
                 print(f"DEBUG round {round_num}: scrolling x{steps}")
 
             try:
-                round_markdown, round_links, round_html = firecrawl_client.scrape(
+                round_markdown, round_links, round_html, _url = firecrawl_client.scrape(
                     page_url, want_links=True, want_html=True, actions=actions
                 )
             except Exception as e:

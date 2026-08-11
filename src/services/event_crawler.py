@@ -59,7 +59,7 @@ def crawl_event(
         return existing
 
     try:
-        markdown, _links, _html = firecrawl_client.scrape(event_url, want_links=False)
+        markdown, _links, _html, _url = firecrawl_client.scrape(event_url, want_links=False)
         content_hash = _hash(markdown)
 
         if check_mode == "hash-check" and existing and existing.content_hash == content_hash:
