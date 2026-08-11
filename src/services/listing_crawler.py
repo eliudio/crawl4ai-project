@@ -39,6 +39,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import requests
+from bs4 import BeautifulSoup
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -55,8 +56,8 @@ _JUNK_SUBSTRINGS = [
 
 # Safety caps, not tuning knobs - just there to bound a runaway pagination
 # loop or a "load more" page that never stops offering more.
-_MAX_LISTING_PAGES = 20
-_LOAD_MORE_MAX_ROUNDS = 4
+_MAX_LISTING_PAGES = 50
+_LOAD_MORE_MAX_ROUNDS = 50
 _LOAD_MORE_SCROLL_STEP_INCREMENT = 6
 # AJAX-backed "load more" plugins (e.g. Divi Machine) fire a real
 # wp-admin/admin-ajax.php request and re-render on response - 1500ms was
@@ -77,6 +78,116 @@ def _scroll_actions(steps: int) -> list[dict]:
         actions.append({"type": "scroll", "direction": "down"})
         actions.append({"type": "wait", "milliseconds": _LOAD_MORE_WAIT_MS})
     return actions
+
+
+def _validate_selector(html: str, selector: str | None) -> str | None:
+    """
+    An LLM-picked CSS selector is wrong in two costly ways, and this catches
+    both before it's ever used for a real click: matching zero elements
+    (e.g. built from an attribute like Angular's `classname` that only
+    appears in server-rendered markup, not the live DOM Firecrawl's browser
+    actually clicks against - every click then hangs and burns 3 retries
+    with exponential backoff on something that can never succeed) or
+    matching more than one (a generic class shared with unrelated buttons
+    elsewhere on the page - the click lands on whichever matches first in
+    the DOM, not the one meant, silently doing nothing useful).
+
+    Checked against this same round's `html` (what the LLM was shown) -
+    not a full guarantee, since a selector unique here can still fail to
+    resolve post-hydration, but it's a real filter for both known failure
+    modes at zero extra cost.
+    """
+    if not selector:
+        return None
+    try:
+        count = len(BeautifulSoup(html, "html.parser").select(selector))
+    except Exception:
+        count = 0
+    if count != 1:
+        print(f"DEBUG selector {selector!r} matches {count} element(s), not 1 - discarding")
+        return None
+    return selector
+
+
+_APPEND_TEXT_KEYWORDS = ("load more", "show more", "view more")
+_NEXT_TEXT_KEYWORDS = ("next", "next page")
+
+
+def _element_text_signals(el) -> set[str]:
+    signals = {el.get_text(strip=True).lower()}
+    for attr in ("aria-label", "title"):
+        value = el.get(attr)
+        if value:
+            signals.add(value.strip().lower())
+    return signals
+
+
+def _piece(node) -> str:
+    node_id = node.get("id")
+    if node_id:
+        return f"#{node_id}"
+    classes = node.get("class") or []
+    return node.name + "".join(f".{c}" for c in classes) if classes else node.name
+
+
+def _find_click_selector(html: str, keywords: tuple[str, ...]) -> str | None:
+    """
+    Deterministic alternative to asking the LLM to invent a CSS selector
+    (see _validate_selector's docstring for why that's unreliable): find
+    the actual clickable element whose own visible text - or aria-label/
+    title, for icon-only controls - says one of `keywords`, then walk up
+    its ancestors combining tag+class/id until the resulting selector
+    uniquely matches just that one element. Grounding the selector in the
+    element's own real text sidesteps both of an LLM-guessed selector's
+    failure modes: a hallucinated/framework-internal attribute that
+    doesn't survive to the live DOM, and a reusable class shared with
+    unrelated buttons elsewhere on the page - "Load more"/"Next" text is
+    reliably unique even when the classes around it aren't (confirmed in
+    practice: runthrough.co.uk's real Load More button shares its only
+    classes with 44 unrelated per-event "Book now" buttons, but its own
+    text is the only "load more" on the page).
+
+    Returns None if there isn't exactly one text match, or no ancestor
+    chain resolves to a unique selector within a few levels - callers
+    should fall back to the LLM's own guess (still run through
+    _validate_selector) in that case.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    candidates = [
+        el for el in soup.find_all(["button", "a"])
+        if any(kw in signal for signal in _element_text_signals(el) for kw in keywords)
+    ]
+    if len(candidates) != 1:
+        return None
+
+    pieces: list[str] = []
+    node = candidates[0]
+    for _ in range(6):
+        pieces.insert(0, _piece(node))
+        selector = " ".join(pieces)
+        if len(soup.select(selector)) == 1:
+            return selector
+        node = node.parent
+        if node is None or getattr(node, "name", None) in (None, "html", "[document]"):
+            break
+    return None
+
+
+def _resolve_click_selector(html: str, interaction_type: str, llm_selector: str | None) -> str | None:
+    """
+    Single entry point _analyze_page uses to get a click selector for
+    either "append" or "paginate": always prefer _find_click_selector's
+    deterministic, text-grounded result over the LLM's guess, falling back
+    to the (still uniqueness-checked) LLM guess only when no exactly-one
+    text match exists to derive one from.
+    """
+    if interaction_type == "append":
+        keywords = _APPEND_TEXT_KEYWORDS
+    elif interaction_type == "paginate":
+        keywords = _NEXT_TEXT_KEYWORDS
+    else:
+        return None
+    return _find_click_selector(html, keywords) or _validate_selector(html, llm_selector)
 
 
 def _click_actions(selector: str, presses: int) -> list[dict]:
@@ -260,10 +371,18 @@ def _analyze_page(page_url: str, homepage_url: str) -> tuple[list[str], list[str
         # an "active"/"loading" class to the button once clicked), but that selector
         # only exists on the already-clicked DOM, not on the next round's fresh load -
         # using it there clicks nothing and silently regresses to the unclicked page.
-        load_more_selector = probe["load_more_selector"]
+        load_more_selector = _resolve_click_selector(html, interaction_type, probe["load_more_selector"])
         print(f"DEBUG round 0: len(links)={len(links)} interaction_type={interaction_type!r} selector={load_more_selector!r}")
         for url in links:
             print(f"DEBUG round 0 link: {url!r}")
+
+        if interaction_type == "paginate" and not load_more_selector:
+            # No real "next" element to click reliably - "paginate" has no
+            # scroll fallback the way "append" does below, so there's
+            # nothing safe left to do but treat round 0 as everything
+            # reachable, same as interaction_type == "none".
+            print("DEBUG paginate: no valid selector, falling back to round 0's content only")
+            interaction_type = "none"
 
         if interaction_type == "paginate" and load_more_selector:
             event_urls, candidates = _crawl_paginated_same_url(page_url, homepage_url, load_more_selector, markdown, links)

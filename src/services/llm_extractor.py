@@ -60,31 +60,35 @@ _LISTING_SYSTEM_PROMPT = (
 )
 
 _LISTING_PAGE_SCHEMA_PROPERTIES: dict[str, Any] = {
-    "event_urls": {
+    "event_link_indices": {
         "type": "array",
-        "items": {"type": "string"},
+        "items": {"type": "integer"},
         "description": (
-            "URLs, chosen only from the candidate links given to you, that each lead "
-            "to one specific event/race's own detail page. Exclude navigation, about/"
-            "contact/sponsor/results/news pages, pagination links, and other listing "
-            "or category pages - only include links that point to a single event."
+            "Indices (from the numbered candidate list given to you) of links that "
+            "each lead to one specific event/race's own detail page. Exclude "
+            "navigation, about/contact/sponsor/results/news pages, pagination links, "
+            "and other listing or category pages - only include links that point to a "
+            "single event. Answer with indices, never the URLs themselves - a large "
+            "listing page can have hundreds of candidates, and echoing full URLs back "
+            "reliably runs out of room and produces a cut-off, unparseable response; "
+            "indices into a list you already have cost a few characters each instead."
         ),
     },
-    "next_page_url": {
-        "type": ["string", "null"],
+    "next_page_link_index": {
+        "type": ["integer", "null"],
         "description": (
             "If this page is one of several numbered/paginated pages and there is a "
             "REAL LINK to the next one (e.g. a 'Next' link, or '2', '3', ... page "
             "links that are actual <a href> links, possibly with a page number in "
-            "the URL) - the URL of that next page, chosen only from the candidate "
-            "links given to you. Null if there's no such link - either because this "
-            "is the only/last page, or because the next page is reached by "
+            "the URL) - the index (from the numbered candidate list given to you) of "
+            "that next page's link. Null if there's no such link - either because "
+            "this is the only/last page, or because the next page is reached by "
             "interacting with THIS SAME url instead (a 'load more' button etc - by the "
             "time this is called, that has already been exhausted)."
         ),
     },
 }
-_LISTING_PAGE_REQUIRED = ["event_urls", "next_page_url"]
+_LISTING_PAGE_REQUIRED = ["event_link_indices", "next_page_link_index"]
 
 _LISTING_PAGE_SYSTEM_PROMPT = (
     "You are analysing a sports/race listing page. Identify which links lead to an "
@@ -92,8 +96,10 @@ _LISTING_PAGE_SYSTEM_PROMPT = (
     "other listing pages), and whether there's a REAL LINK (an actual href) to a "
     "further, distinct next-page URL. This page has already been fully loaded - any "
     "'load more' button or infinite scroll has already been exhausted before you see "
-    "it, so only report next_page_url for a genuinely separate page reached by a real "
-    "link. Only choose URLs from the candidate links given to you - never invent one."
+    "it, so only report next_page_link_index for a genuinely separate page reached by "
+    "a real link. The candidate links are given to you as a numbered list - answer "
+    "with indices into that list, never by retyping a URL, and only ever indices that "
+    "were actually given to you."
 )
 
 _LOAD_MORE_SCHEMA_PROPERTIES: dict[str, Any] = {
@@ -120,18 +126,34 @@ _LOAD_MORE_SCHEMA_PROPERTIES: dict[str, Any] = {
         "description": (
             "Only meaningful when interaction_type is 'append' or 'paginate'. A CSS "
             "selector, built from real class/id attributes in the HTML, that uniquely "
-            "targets the SPECIFIC interactive control to click - never a wrapper "
-            "containing multiple clickable things. This matters most for 'paginate': "
-            "a numbered pager is usually one wrapping element (e.g. a <ul> or <nav>) "
-            "containing several page-number buttons/links plus a 'next' arrow - a "
-            "click lands at the CENTER of whatever selector is given, so targeting "
-            "the wrapper hits an arbitrary page number instead of 'next', causing "
-            "erratic non-sequential jumps instead of stepping forward one page at a "
-            "time. Always drill down to the one element that specifically means "
-            "'next' - e.g. a <button>/<a> whose own class, aria-label, or title "
-            "contains 'next' (not just a numbered page-item). If no such "
-            "specifically-'next' element exists in the HTML, return null rather than "
-            "a wrapper or a specific page-number button. Null also when "
+            "matches EXACTLY ONE element in the whole page - the SPECIFIC interactive "
+            "control to click. This is not a stylistic preference, it matters equally "
+            "for both 'append' and 'paginate' and breaks the crawl silently if ignored: "
+            "a click lands on whatever the selector resolves to, so a selector that "
+            "matches more than one element clicks an arbitrary one of them (commonly "
+            "the first in document order), not the control you meant.\n"
+            "Generic classes are the usual trap: a reusable button component (e.g. "
+            "class='button button-primary', 'btn', 'cta') is very often reused for "
+            "unrelated controls all over the same page - per-card 'Book now'/'Details' "
+            "buttons, other CTAs - not just the load-more/pager control. A class "
+            "matching more than this one element is not unique even if it happens to "
+            "be the class actually on the right element. Before answering, check "
+            "whether the class/id you're about to use also appears elsewhere in the "
+            "HTML; if it does, drill down using a more specific ancestor (e.g. a "
+            "wrapping div/section with its own distinctive class or id that has no "
+            "sibling repeats, combined with the element type: '.events__btns button') "
+            "or an attribute unique to this one element (id, aria-label, title "
+            "containing 'load more'/'next'), rather than the bare shared class alone.\n"
+            "For 'paginate' specifically, don't select a wrapper containing several "
+            "page-number buttons/links plus a 'next' arrow (e.g. a whole <ul>/<nav> "
+            "pagination widget) - that has the same non-uniqueness problem one level "
+            "up: the click lands at the CENTER of whatever selector is given, hitting "
+            "an arbitrary page number instead of 'next'. Always drill down to the one "
+            "element that specifically means 'next' - e.g. a <button>/<a> whose own "
+            "class, aria-label, or title contains 'next' (not just a numbered "
+            "page-item).\n"
+            "If no selector can be made to uniquely identify the right element, return "
+            "null rather than guessing with a non-unique one. Null also when "
             "interaction_type is 'none', or content appears via plain infinite scroll "
             "with no distinct element to click."
         ),
@@ -149,9 +171,12 @@ _LOAD_MORE_SYSTEM_PROMPT = (
     "versus numbered/'Next' controls that REPLACE the current items with a different "
     "set (interaction_type 'paginate'). If either applies and it's a distinct "
     "clickable element (not plain infinite scroll), give a CSS selector for it built "
-    "from its real class/id in the HTML - never invent one, and never select a "
-    "wrapper/container that holds several clickable items (e.g. a whole pagination "
-    "widget) - always the one specific control that means 'next'."
+    "from its real class/id in the HTML - never invent one - that matches this ONE "
+    "element and no other element on the page (reusable button classes are commonly "
+    "shared with unrelated per-item CTAs elsewhere on the same page - a shared class "
+    "is not unique just because it's the class on the right element), and never "
+    "select a wrapper/container that holds several clickable items (e.g. a whole "
+    "pagination widget) - always the one specific control that means 'next'."
 )
 
 # Raw HTML can be large even after Firecrawl's own tag exclusion, and a
@@ -364,18 +389,23 @@ def analyze_listing_page(listing_url: str, markdown: str, candidate_links: list[
     if not candidate_links:
         return {"event_urls": [], "next_page_url": None}
 
+    numbered_candidates = "\n".join(f"{i}: {url}" for i, url in enumerate(candidate_links))
     instructions = (
         f"Listing page URL: {listing_url}\n\n"
         f"Listing page content:\n{markdown}\n\n"
-        "Candidate same-site links found on this page:\n" + "\n".join(candidate_links)
+        "Candidate same-site links found on this page, numbered - answer with these "
+        "numbers, not the URLs:\n" + numbered_candidates
     )
     user_prompt = _build_user_prompt(instructions, _LISTING_PAGE_SCHEMA_PROPERTIES, _LISTING_PAGE_REQUIRED)
-    # The response has to echo back up to len(candidate_links) full URLs into
-    # event_urls - a fixed cap sized for a handful of short URLs (fine for
-    # discover_listing_urls/detect_load_more) silently truncates the JSON
-    # for listing pages with many/long URLs (seen in practice: 54 long URLs
-    # blew past 1200 tokens and cut off mid-response).
-    max_tokens = min(8000, 800 + len(candidate_links) * 60)
+    # Answering by index (a few characters each) rather than echoing full URLs
+    # back is what makes this cheap regardless of candidate count - a listing
+    # page with hundreds of candidates (a deep "load more"/pager site fully
+    # exhausted before this is ever called) used to blow straight through any
+    # fixed token budget trying to retype every confirmed URL in full, cutting
+    # the JSON off mid-string (seen in practice: 331 candidates truncated even
+    # an 8000-token cap, discarding the whole result). This scaling is just
+    # headroom for the indices array itself, not URL text.
+    max_tokens = min(4000, 1000 + len(candidate_links) * 8)
     try:
         fields = _run_llm(
             _LISTING_PAGE_SYSTEM_PROMPT,
@@ -389,11 +419,21 @@ def analyze_listing_page(listing_url: str, markdown: str, candidate_links: list[
         print(f"{datetime.now():%H:%M:%S} - analyze_listing_page failed for {listing_url}: {type(e).__name__}: {e}")
         return {"event_urls": [], "next_page_url": None}
 
-    allowed = set(candidate_links)
-    event_urls = [url for url in (fields.get("event_urls") or []) if url in allowed]
-    next_page_url = fields.get("next_page_url")
-    if next_page_url not in allowed:
-        next_page_url = None
+    def _resolve_index(index: Any) -> str | None:
+        if isinstance(index, bool) or not isinstance(index, int):
+            return None
+        if 0 <= index < len(candidate_links):
+            return candidate_links[index]
+        return None
+
+    event_urls = []
+    seen: set[str] = set()
+    for index in fields.get("event_link_indices") or []:
+        url = _resolve_index(index)
+        if url and url not in seen:
+            seen.add(url)
+            event_urls.append(url)
+    next_page_url = _resolve_index(fields.get("next_page_link_index"))
 
     return {
         "event_urls": event_urls,
