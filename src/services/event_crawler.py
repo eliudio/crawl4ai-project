@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from services import llm_extractor, robots, scraper_client
 from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event, EventDistance
+from services.race_types import get_or_create_race_type
 
 
 def _hash(markdown: str) -> str:
@@ -99,8 +100,18 @@ def crawl_event(
         # delete-orphan" on Event.distances takes care of removing the old rows.
         event.distances.clear()
         for i, d in enumerate(fields.get("distances") or []):
+            # Resolves (or creates, first time this exact combination is seen) the
+            # shared RaceType row for this distance - see race_types.py. None when
+            # distance_category couldn't be determined; the raw distance_text/
+            # price_text are still stored on the EventDistance either way.
+            race_type = get_or_create_race_type(session, event.sport, d.get("distance_category"))
             event.distances.append(
-                EventDistance(distance_text=d["distance_text"], price_text=d.get("price_text"), sort_order=i)
+                EventDistance(
+                    distance_text=d["distance_text"],
+                    price_text=d.get("price_text"),
+                    sort_order=i,
+                    race_type=race_type,
+                )
             )
         event.raw_markdown = markdown
         event.content_hash = content_hash

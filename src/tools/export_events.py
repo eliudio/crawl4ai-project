@@ -1,16 +1,23 @@
 """
-Dumps the `events` table (joined with its organiser) to CSV, or to a single
-self-contained HTML file, for ad-hoc inspection of what the pipeline has
+Dumps the `events` table (joined with its organiser) to CSV, or to two
+self-contained HTML files, for ad-hoc inspection of what the pipeline has
 collected so far without needing `psql` open.
 
-The HTML export renders an expand/collapse tree - organiser -> its events ->
-each event's full detail - using plain <details>/<summary> (no JS needed),
-plus a Google Maps link and embedded map per event where a location is known.
+Both HTML exports render an expand/collapse tree using plain <details>/
+<summary> (no JS needed), just grouped differently:
+- events_per_organiser.html: organiser -> its events -> each event's full
+  detail, plus a Google Maps link and embedded map per event where a
+  location is known.
+- events_per_event_type.html: sport -> standardised race type (see
+  race_types.py - "marathon", "10_k", "10_m", ...) -> the events offering
+  that distance, for browsing "show me every marathon" rather than
+  per-organiser. A distance with no resolved race type (see
+  EventDistance.race_type_id) still shows up, grouped under "uncategorised".
 
 Usage:
     python -m tools.export_events --format csv
     python -m tools.export_events --format html
-    python -m tools.export_events --format html --output out.html
+    python -m tools.export_events --format html --output out.html --output-by-type out2.html
     python -m tools.export_events --organiser-id 3
 """
 
@@ -26,12 +33,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from services.db import session_scope
-from services.models import Event, Organiser
+from services.models import Event, EventDistance, Organiser
 
 DEFAULT_OUTPUT = {
-    "csv": Path(__file__).parent / "data" / "events_export.csv",
-    "html": Path(__file__).parent / "data" / "events_export.html",
+    "csv": Path("c:/temp/crawl4ai/events/events_export.csv"),
+    "html": Path("c:/temp/crawl4ai/events/events_per_organiser.html"),
+    "html_by_type": Path("c:/temp/crawl4ai/events/events_per_event_type.html"),
 }
+
+_UNCATEGORISED_SPORT = "uncategorised"
+_UNCATEGORISED_LABEL = "(uncategorised)"
 
 CSV_FIELDNAMES = [
     "id",
@@ -74,8 +85,9 @@ def _fetch_rows(session, organiser_id: int | None = None):
         select(Event, Organiser.name)
         .join(Organiser, Organiser.id == Event.organiser_id)
         # Eager-load: export_html renders after `session_scope` has closed the session,
-        # so a lazy load of event.distances at that point would raise DetachedInstanceError.
-        .options(selectinload(Event.distances))
+        # so a lazy load of event.distances (or distance.race_type) at that point would
+        # raise DetachedInstanceError.
+        .options(selectinload(Event.distances).selectinload(EventDistance.race_type))
     )
     if organiser_id is not None:
         stmt = stmt.where(Event.organiser_id == organiser_id)
@@ -83,8 +95,9 @@ def _fetch_rows(session, organiser_id: int | None = None):
     return list(session.execute(stmt))
 
 
-def _format_distance(distance) -> str:
-    return f"{distance.distance_text}: {distance.price_text}" if distance.price_text else distance.distance_text
+def _format_distance(distance: EventDistance) -> str:
+    label = f"{distance.distance_text} [{distance.race_type.label}]" if distance.race_type else distance.distance_text
+    return f"{label}: {distance.price_text}" if distance.price_text else label
 
 
 def _distances_summary(event: Event) -> str:
@@ -155,8 +168,16 @@ def _render_distances(event: Event) -> str:
     rows = []
     for d in event.distances:
         price_html = html.escape(d.price_text) if d.price_text else '<span class="empty">&mdash;</span>'
-        rows.append(f"<tr><td>{html.escape(d.distance_text)}</td><td>{price_html}</td></tr>")
-    return f'<table class="distances"><thead><tr><th>Distance</th><th>Price</th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
+        race_type_html = (
+            f'<code>{html.escape(d.race_type.label)}</code>' if d.race_type else '<span class="empty">&mdash;</span>'
+        )
+        rows.append(
+            f"<tr><td>{html.escape(d.distance_text)}</td><td>{price_html}</td><td>{race_type_html}</td></tr>"
+        )
+    return (
+        '<table class="distances"><thead><tr><th>Distance</th><th>Price</th>'
+        f'<th>Race type</th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
+    )
 
 
 def _render_page_content(event: Event) -> str:
@@ -172,7 +193,14 @@ def _render_page_content(event: Event) -> str:
           </details>"""
 
 
-def _render_event(event: Event) -> str:
+def _render_event(event: Event, organiser_name: str | None = None) -> str:
+    """
+    Renders one event's full detail block - fields table, distances, map, raw
+    page content. Shared by both HTML exports: events_per_organiser.html calls
+    this with no organiser_name (it's already the enclosing group there);
+    events_per_event_type.html passes it, since an event's organiser isn't
+    otherwise implied by "grouped under this distance".
+    """
     name = html.escape(event.name or f"(untitled event #{event.id})")
     badges = "".join(
         f'<span class="badge">{html.escape(v)}</span>'
@@ -181,6 +209,8 @@ def _render_event(event: Event) -> str:
     )
 
     rows = []
+    if organiser_name is not None:
+        rows.append(f"<tr><th>Organiser</th><td>{html.escape(organiser_name)}</td></tr>")
     for label, attr in DETAIL_FIELDS:
         value = getattr(event, attr)
         value_html = html.escape(str(value)) if value else '<span class="empty">&mdash;</span>'
@@ -212,6 +242,31 @@ def _render_organiser(organiser_name: str, events: list[Event]) -> str:
       <details class="organiser" open>
         <summary>{name} <span class="count">({len(events)} event{"s" if len(events) != 1 else ""})</span></summary>
         <div class="events">{events_html}</div>
+      </details>"""
+
+
+def _render_distance_group(label: str, entries: list[tuple[Event, str, EventDistance]]) -> str:
+    # Reuses _render_event (same function events_per_organiser.html renders with) rather
+    # than a second, parallel "what does an event look like" renderer - each entry's
+    # distance itself isn't singled out here since _render_event's own distances table
+    # already shows all of that event's distances, this one included.
+    events_html = "".join(_render_event(event, organiser_name) for event, organiser_name, _distance in entries)
+    return f"""
+      <details class="distance">
+        <summary><code>{html.escape(label)}</code> <span class="count">({len(entries)} event{"s" if len(entries) != 1 else ""})</span></summary>
+        <div class="events">{events_html}</div>
+      </details>"""
+
+
+def _render_sport(sport_label: str, distances_by_label: dict[str, list]) -> str:
+    total = sum(len(entries) for entries in distances_by_label.values())
+    distances_html = "".join(
+        _render_distance_group(label, entries) for label, entries in sorted(distances_by_label.items())
+    )
+    return f"""
+      <details class="sport" open>
+        <summary>{html.escape(sport_label)} <span class="count">({total} event{"s" if total != 1 else ""} across {len(distances_by_label)} distance{"s" if len(distances_by_label) != 1 else ""})</span></summary>
+        <div class="distances-by-sport">{distances_html}</div>
       </details>"""
 
 
@@ -255,27 +310,31 @@ _CSS = """
   }
   details[open] > summary::before { transform: rotate(90deg); }
 
-  details.organiser {
+  details.organiser, details.sport {
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.75rem 1rem;
   }
-  details.organiser > summary {
+  details.organiser > summary, details.sport > summary {
     font-size: 1.15rem;
     font-weight: 600;
   }
   .count { font-weight: 400; color: var(--muted); font-size: 0.9rem; }
-  .events { margin-top: 0.6rem; padding-left: 1.4rem; border-left: 2px solid var(--border); }
+  .events, .distances-by-sport {
+    margin-top: 0.6rem;
+    padding-left: 1.4rem;
+    border-left: 2px solid var(--border);
+  }
 
-  details.event {
+  details.event, details.distance {
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 0.5rem 0.8rem;
     margin: 0.5rem 0;
   }
-  details.event > summary { font-weight: 500; }
+  details.event > summary, details.distance > summary { font-weight: 500; }
   .badge {
     display: inline-block;
     margin-left: 0.5rem;
@@ -309,7 +368,7 @@ _CSS = """
     text-transform: uppercase;
     letter-spacing: 0.03em;
   }
-  table.distances { width: 100%; max-width: 26rem; border-collapse: collapse; }
+  table.distances { width: 100%; max-width: 34rem; border-collapse: collapse; }
   table.distances th, table.distances td {
     text-align: left;
     padding: 0.25rem 0.6rem;
@@ -317,6 +376,12 @@ _CSS = """
     font-size: 0.92rem;
   }
   table.distances th { color: var(--muted); font-weight: 500; }
+  table.distances code {
+    background: var(--bg);
+    border-radius: 3px;
+    padding: 0.1em 0.35em;
+    font-size: 0.88em;
+  }
 
   .maps-link { color: var(--accent); text-decoration: none; font-size: 0.92rem; }
   .maps-link:hover { text-decoration: underline; }
@@ -397,7 +462,7 @@ _CSS = """
 """
 
 
-def export_html(output_path: Path, organiser_id: int | None = None) -> int:
+def export_events_per_organiser(output_path: Path, organiser_id: int | None = None) -> int:
     """Writes the organiser -> events -> details tree to a single HTML file. Returns the event count."""
     with session_scope() as session:
         rows = _fetch_rows(session, organiser_id)
@@ -419,11 +484,11 @@ def export_html(output_path: Path, organiser_id: int | None = None) -> int:
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Events export</title>
+<title>Events per organiser</title>
 <style>{_CSS}</style>
 </head>
 <body>
-  <h1>Events export</h1>
+  <h1>Events per organiser</h1>
   <p class="meta">{total} event(s) across {len(grouped)} organiser(s) &middot; generated {generated_at}</p>
   {organisers_html}
 </body>
@@ -434,19 +499,67 @@ def export_html(output_path: Path, organiser_id: int | None = None) -> int:
     return total
 
 
+def export_events_per_event_type(output_path: Path, organiser_id: int | None = None) -> int:
+    """
+    Writes the sport -> race type -> events tree to a single HTML file (see
+    race_types.py for how each distance resolves to a standardised race type -
+    "marathon", "10_k", "10_m", etc). A distance with no resolved race type
+    still appears, grouped under "uncategorised" rather than silently dropped.
+    Returns the number of (event, distance) entries written.
+    """
+    with session_scope() as session:
+        rows = _fetch_rows(session, organiser_id)
+
+        # sport label -> race type label -> [(event, organiser_name, distance), ...]
+        grouped: dict[str, dict[str, list[tuple[Event, str, EventDistance]]]] = {}
+        for event, organiser_name in rows:
+            for d in event.distances:
+                if d.race_type:
+                    sport_label = d.race_type.sport.value
+                    type_label = d.race_type.label
+                else:
+                    sport_label = _UNCATEGORISED_SPORT
+                    type_label = _UNCATEGORISED_LABEL
+                grouped.setdefault(sport_label, {}).setdefault(type_label, []).append((event, organiser_name, d))
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    total = sum(len(entries) for distances in grouped.values() for entries in distances.values())
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    sports_html = "".join(_render_sport(sport, distances) for sport, distances in sorted(grouped.items()))
+
+    doc = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Events per race type</title>
+<style>{_CSS}</style>
+</head>
+<body>
+  <h1>Events per race type</h1>
+  <p class="meta">{total} distance entr{"y" if total == 1 else "ies"} across {len(grouped)} sport(s) &middot; generated {generated_at}</p>
+  {sports_html}
+</body>
+</html>
+"""
+    output_path.write_text(doc, encoding="utf-8")
+    print(f"wrote {total} distance entries across {len(grouped)} sport(s) to {output_path}")
+    return total
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--format", choices=["csv", "html"], default="html")
-    parser.add_argument("--output", type=Path, default=None, help="output path (default: tools/data/events_export.<format>)")
+    parser.add_argument("--output", type=Path, default=None, help="output path (default: tools/data/events_export.csv, or events_per_organiser.html when --format html)")
+    parser.add_argument("--output-by-type", type=Path, default=None, help="only used with --format html: path for the sport/race-type-grouped export (default: tools/data/events_per_event_type.html)")
     parser.add_argument("--organiser-id", type=int, default=None, help="only export events for this organiser id")
     args = parser.parse_args()
 
-    output_path = args.output or DEFAULT_OUTPUT[args.format]
-
     if args.format == "csv":
-        export_csv(output_path, organiser_id=args.organiser_id)
+        export_csv(args.output or DEFAULT_OUTPUT["csv"], organiser_id=args.organiser_id)
     else:
-        export_html(output_path, organiser_id=args.organiser_id)
+        export_events_per_organiser(args.output or DEFAULT_OUTPUT["html"], organiser_id=args.organiser_id)
+        export_events_per_event_type(args.output_by_type or DEFAULT_OUTPUT["html_by_type"], organiser_id=args.organiser_id)
 
 
 if __name__ == "__main__":

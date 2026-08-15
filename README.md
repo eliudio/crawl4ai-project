@@ -7,8 +7,11 @@ Ask AI to cleanup
 2) introduce code coverage tool
 3) write unit tests to cover 100% of code
 4) restructure the code, new directory structure
-4.1) introduce a subdirectory for common, local and server
-4.2) put specific python scripts in these directories, specific to these purposes, common, local and server
+- introduce a subdirectory for common, local and server
+- put specific python scripts in these directories, specific to these purposes, common, local and serve
+- create directories tools/export with export scripts
+- create directories models and move the models in there
+- mimick the same directory structure for unit tests
 5) 
 
 ## run on google

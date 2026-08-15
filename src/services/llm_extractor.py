@@ -31,6 +31,39 @@ _EVENT_SCHEMA_PROPERTIES: dict[str, Any] = {
             "properties": {
                 "distance_text": {"type": "string", "description": "One distance on offer, exactly as written (e.g. '5k', 'Half Marathon')"},
                 "price_text": {"type": ["string", "null"], "description": "This distance's own entry price, exactly as written, if stated"},
+                "distance_category": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "Standardised machine-readable label for THIS distance, snake_case, "
+                        "lowercase, so the exact same physical distance always gets the exact "
+                        "same label regardless of how the page phrases it or which unit it uses - "
+                        "the underlying distance decides the label, never the page's own wording. "
+                        "Pick EXACTLY ONE of these two forms - never mix them for the same "
+                        "distance, and never invent a third form:\n"
+                        "1. Round metric race distances - 5K, 10K, 15K, 20K - ALWAYS use the bare "
+                        "word form 'Nk' ('5k', '10k', '15k', '20k'), with NO underscore, regardless "
+                        "of whether the page calls it '5K', '5 km', '5 kilometres', or 'five km'. "
+                        "Never use '5_k'/'10_k' for these four distances - that is a distinct, "
+                        "wrong label from '5k'/'10k' and must not be produced.\n"
+                        "2. Every other numeric distance (any distance that ISN'T one of 5K/10K/"
+                        "15K/20K, or a traditional named distance below) uses a plain number + unit, "
+                        "with the page's OWN number, not a conversion: '{n}_k' for kilometres (e.g. "
+                        "'12_k' for '12 km', '28_k' for '28 km'), '{n}_m' for miles (e.g. '10_m' for "
+                        "'10 miles' or '10 m').\n"
+                        "3. Traditional distances with an established name that ISN'T a round "
+                        "number use that name, converting from whichever unit the page states: "
+                        "'marathon' (26.22mi/42.195km), 'half_marathon' (13.1mi/21.1km), 'ultra' "
+                        "(any distance longer than a marathon with no single standard length), "
+                        "'sprint_triathlon', 'olympic_triathlon' (also called 'Standard Triathlon'), "
+                        "'half_ironman' (also called '70.3', 'Middle Distance Triathlon', 'Half "
+                        "Ironman Distance' - always use 'half_ironman' for any of these, never "
+                        "transcribe the page's own phrase like 'middle_distance_triathlon'), "
+                        "'ironman' (also called '140.6', 'Full Distance Triathlon', 'Long Distance "
+                        "Triathlon' - always use 'ironman', never transcribe the page's own phrase).\n"
+                        "- Null if distance_text doesn't state an actual measurable distance "
+                        "(e.g. 'fun run', 'kids race' with no length given)."
+                    ),
+                },
             },
             "required": ["distance_text"],
         },
@@ -361,7 +394,14 @@ def _normalize_distances(raw: Any) -> list[dict[str, str | None]]:
         if not distance_text:
             continue
         price_text = entry.get("price_text")
-        distances.append({"distance_text": str(distance_text), "price_text": str(price_text) if price_text else None})
+        distance_category = entry.get("distance_category")
+        distances.append({
+            "distance_text": str(distance_text),
+            "price_text": str(price_text) if price_text else None,
+            # Light cleanup only (whitespace/case) - race_types.get_or_create_race_type does
+            # the real slugifying/validation before this ever reaches a label.
+            "distance_category": str(distance_category).strip().lower() if distance_category else None,
+        })
     return distances
 
 
