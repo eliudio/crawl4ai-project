@@ -65,6 +65,14 @@ class Organiser(Base):
     # until discover_listing_urls() (see llm_extractor.py) has run once.
     listing_urls: Mapped[list[str]] = mapped_column(ARRAY(String(1024)), default=list)
 
+    # A "Sitemap:" entry read from this organiser's robots.txt (see
+    # discover_sitemaps.py) - when present, listing_crawler.py prefers
+    # reading this directly (sitemap_crawler.py) over opening listing_urls
+    # and clicking through load-more/pagination, since it's a direct,
+    # complete list of the site's URLs with no browser/LLM interaction
+    # needed to obtain it. Null until discover_sitemaps.py has found one.
+    sitemap_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
     # Only "organiser" rows are ever fed to the event-crawl queue. Rows
     # discovered on aggregator/platform sites are recorded for provenance
     # but structurally excluded from event crawling.

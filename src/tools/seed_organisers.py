@@ -29,10 +29,19 @@ def seed_from_csv(csv_path: Path = SEED_CSV) -> list[int]:
 
     with session_scope() as session, csv_path.open(newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
+            sitemap_url = row.get("sitemap_url") or None
             existing = session.scalar(
                 select(Organiser).where(Organiser.homepage_url == row["homepage_url"])
             )
             if existing:
+                # discover_sitemaps.py runs independently of seeding (it only
+                # rewrites the CSV) and organisers already in the DB are
+                # never re-inserted below, so a sitemap found after the
+                # first seed would otherwise never reach an existing row -
+                # sync just this one field rather than skipping entirely.
+                if sitemap_url and existing.sitemap_url != sitemap_url:
+                    existing.sitemap_url = sitemap_url
+                    session.add(existing)
                 ids.append(existing.id)
                 continue
 
@@ -42,6 +51,7 @@ def seed_from_csv(csv_path: Path = SEED_CSV) -> list[int]:
                 listing_urls=json.loads(row["listing_urls"]),
                 source_type=SourceType.ORGANISER,
                 discovered_via=row["discovered_via"],
+                sitemap_url=sitemap_url,
             )
             session.add(organiser)
             session.flush()  # assign organiser.id

@@ -17,7 +17,7 @@ from sqlalchemy import select
 from services import event_crawler, listing_crawler
 from services.db import init_db, session_scope
 from services.models import Organiser
-from services.seed_organisers import seed_from_csv
+from tools.seed_organisers import seed_from_csv
 
 
 def run(

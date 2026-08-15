@@ -161,6 +161,29 @@ _LOAD_MORE_SCHEMA_PROPERTIES: dict[str, Any] = {
 }
 _LOAD_MORE_REQUIRED = ["interaction_type", "load_more_selector"]
 
+_EVENTS_SITEMAP_SCHEMA_PROPERTIES: dict[str, Any] = {
+    "events_sitemap_index": {
+        "type": ["integer", "null"],
+        "description": (
+            "Index (from the numbered list given to you) of the one sub-sitemap "
+            "whose own URL suggests it lists individual event/race detail pages "
+            "(e.g. a path/filename segment like 'events' or 'races') - not "
+            "categories, blog posts, static pages, products, or anything else. "
+            "Null if none of them look like that."
+        ),
+    },
+}
+_EVENTS_SITEMAP_REQUIRED = ["events_sitemap_index"]
+
+_EVENTS_SITEMAP_SYSTEM_PROMPT = (
+    "You are given a numbered list of sub-sitemap URLs referenced from a sitemap "
+    "index (a <sitemapindex> pointing at several other sitemaps, e.g. one for "
+    "events, one for categories, one for blog posts, one for static pages). Pick "
+    "the one that most likely lists individual event/race detail pages, judging "
+    "only from each URL's own path/filename - there is no page content to read, "
+    "just the URLs themselves. Answer with its index, never the URL itself."
+)
+
 _LOAD_MORE_SYSTEM_PROMPT = (
     "You are inspecting the raw HTML of a listing page to check for ONE thing: is "
     "there a 'load more'-style affordance - a button/control that reveals more items "
@@ -370,6 +393,45 @@ def detect_load_more(listing_url: str, html: str) -> dict[str, Any]:
         "interaction_type": interaction_type,
         "load_more_selector": fields.get("load_more_selector") or None,
     }
+
+
+def select_events_sitemap(sitemap_urls: list[str]) -> str | None:
+    """
+    Used by sitemap_crawler.py when a robots.txt-advertised sitemap turns
+    out to be a <sitemapindex> (a list of OTHER sitemaps - e.g. one for
+    events, one for categories, one for blog posts) rather than a direct
+    list of page URLs: picks which of those sub-sitemaps is the one that
+    actually lists individual events, judging only from each sub-sitemap's
+    own URL (there's no page content here, just sitemap URLs). Answers by
+    index into `sitemap_urls`, the same trick analyze_listing_page uses,
+    though it matters less here since this list is typically small.
+
+    Returns None if there are no candidates, the call fails, or the model
+    doesn't think any of them look like an events sitemap - callers should
+    treat that as "couldn't resolve a sitemap here", not "zero events".
+    """
+    if not sitemap_urls:
+        return None
+
+    numbered = "\n".join(f"{i}: {url}" for i, url in enumerate(sitemap_urls))
+    instructions = f"Sub-sitemaps found in this sitemap index:\n{numbered}"
+    user_prompt = _build_user_prompt(instructions, _EVENTS_SITEMAP_SCHEMA_PROPERTIES, _EVENTS_SITEMAP_REQUIRED)
+    try:
+        fields = _run_llm(
+            _EVENTS_SITEMAP_SYSTEM_PROMPT, user_prompt,
+            _EVENTS_SITEMAP_SCHEMA_PROPERTIES, _EVENTS_SITEMAP_REQUIRED,
+            "select_events_sitemap", max_tokens=200,
+        )
+    except Exception as e:
+        print(f"{datetime.now():%H:%M:%S} - select_events_sitemap failed: {type(e).__name__}: {e}")
+        return None
+
+    index = fields.get("events_sitemap_index")
+    if isinstance(index, bool) or not isinstance(index, int):
+        return None
+    if 0 <= index < len(sitemap_urls):
+        return sitemap_urls[index]
+    return None
 
 
 def analyze_listing_page(listing_url: str, markdown: str, candidate_links: list[str]) -> dict[str, Any]:

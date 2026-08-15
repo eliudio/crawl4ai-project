@@ -98,7 +98,14 @@ docker-compose up
 docker start events-db && docker ps --filter "name=events-db" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"```
 ```
 
-4. run service
+4. Optional: Drop all data from postgres
+```
+docker exec -it events-db psql -U postgres -c "DROP DATABASE events;"
+docker exec -it events-db psql -U postgres -c "CREATE DATABASE events;"
+docker exec -it events-db psql -U postgres -d postgres -c "CREATE DATABASE events;"
+```
+
+5. run service
 ```
 cd src
 poetry run python -m services.local_runner --limit 3

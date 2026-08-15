@@ -6,10 +6,16 @@ No hand-maintained per-site CSS selector config (unlike the old prototype's
 SiteConfig approach, which generated + validated per-site selectors for three
 loading strategies via Selenium). Instead:
 
-- Links are first narrowed down heuristically by domain + junk patterns
-  (filter_candidate_links), then the survivors are confirmed as actual event
-  detail pages by the LLM (llm_extractor.analyze_listing_page) - the
-  heuristic pass alone can't tell an event link apart from e.g. /about or
+- crawl_listing prefers organiser.sitemap_url (a Sitemap: entry read from
+  this organiser's robots.txt by discover_sitemaps.py) over everything else
+  below, when one is known: sitemap_crawler.py reads it directly - a static
+  XML file, no browser/clicking/per-page LLM confirmation needed - and
+  _crawl_from_sitemap only falls through to the mechanisms below when no
+  sitemap is known, or the known one couldn't be resolved into anything.
+- Failing that, links are first narrowed down heuristically by domain + junk
+  patterns (filter_candidate_links), then the survivors are confirmed as
+  actual event detail pages by the LLM (llm_extractor.analyze_listing_page) -
+  the heuristic pass alone can't tell an event link apart from e.g. /about or
   /results on the same domain.
 - The rest of a listing's events are reached one of three genuinely
   different ways, detected via llm_extractor.detect_load_more and handled by
@@ -36,23 +42,15 @@ later if needed.
 """
 
 from datetime import datetime, timezone
-from urllib.parse import urlparse
 
-import requests
 from bs4 import BeautifulSoup
+import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from services import firecrawl_client, llm_extractor, robots
+from services import firecrawl_client, llm_extractor, robots, sitemap_crawler
+from services.link_filters import filter_candidate_links
 from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event, Organiser
-
-_JUNK_SUBSTRINGS = [
-    "facebook.com", "twitter.com", "x.com", "instagram.com", "linkedin.com",
-    "youtube.com", "tiktok.com",
-    "mailto:", "tel:", "javascript:",
-    "/privacy", "/terms", "/cookie", "/login", "/signin", "/signup",
-    "/account", "/cart", "/checkout", "/basket",
-]
 
 # Safety caps, not tuning knobs - just there to bound a runaway pagination
 # loop or a "load more" page that never stops offering more.
@@ -271,49 +269,6 @@ def _crawl_paginated_same_url(
     return sorted(confirmed), sorted(all_candidates)
 
 
-def _strip_www(netloc: str) -> str:
-    return netloc[4:] if netloc.startswith("www.") else netloc
-
-
-def _core_label(netloc: str) -> str:
-    """First label of a (www-stripped) domain - approximates an organiser's
-    own brand name (e.g. 'zigzagrunning' from 'zigzagrunning.co.uk') without
-    needing a public-suffix list."""
-    return netloc.split(".")[0]
-
-
-def _same_site(url: str, homepage_netloc: str) -> bool:
-    netloc = _strip_www(urlparse(url).netloc.lower())
-    homepage_netloc = _strip_www(homepage_netloc.lower())
-    if netloc == homepage_netloc or netloc.endswith("." + homepage_netloc):
-        return True
-    # Some organisers' actual event pages live on a third-party ticketing
-    # platform under a branded subdomain (e.g. zigzagrunning.eventrac.co.uk
-    # for homepage zigzagrunning.co.uk) rather than the organiser's own
-    # domain - a domain/subdomain match alone misses these entirely. Treat it
-    # as the same site if the candidate's leftmost label is the organiser's
-    # own brand name, regardless of what domain it's a subdomain of.
-    return _core_label(netloc) == _core_label(homepage_netloc)
-
-
-def filter_candidate_links(links: list[str], homepage_url: str) -> list[str]:
-    homepage_netloc = urlparse(homepage_url).netloc
-    seen: set[str] = set()
-    candidates: list[str] = []
-    for url in links:
-        url = url.strip()
-        if not url or url in seen:
-            continue
-        lower = url.lower()
-        if any(junk in lower for junk in _JUNK_SUBSTRINGS):
-            continue
-        if not _same_site(url, homepage_netloc):
-            continue
-        seen.add(url)
-        candidates.append(url)
-    return candidates
-
-
 def _discover_listing_urls(session: Session, organiser: Organiser) -> list[str]:
     """
     Inspect the homepage with AI to find where event listings live, and
@@ -520,12 +475,56 @@ def _crawl_one_listing_url(
     return new_urls
 
 
+def _crawl_from_sitemap(session: Session, organiser: Organiser) -> list[str] | None:
+    """
+    Case 0 (preferred over everything else in this module): organiser.sitemap_url
+    is a direct, complete list of the site's URLs read straight from a static
+    XML file (see sitemap_crawler.py) - no browser, no clicking through
+    load-more/pagination, no per-page LLM confirmation needed. Only reached
+    at all when discover_sitemaps.py has found a Sitemap: entry in this
+    organiser's robots.txt.
+
+    Returns None (not []) when the sitemap couldn't be resolved into
+    anything - crawl_listing falls back to the normal page-crawling
+    mechanism below in that case, rather than treating a sitemap that
+    turned out to be unusable as "this organiser has zero events".
+    """
+    event_urls = sitemap_crawler.get_event_urls(organiser.sitemap_url, organiser.homepage_url)
+    if event_urls is None:
+        print(f"DEBUG sitemap {organiser.sitemap_url!r} unusable, falling back to listing_urls")
+        return None
+
+    run = CrawlRun(
+        run_type=CrawlRunType.LISTING,
+        target_url=organiser.sitemap_url,
+        organiser_id=organiser.id,
+        status=CrawlStatus.SUCCESS,
+        started_at=datetime.now(timezone.utc),
+    )
+    existing_urls = set(session.scalars(select(Event.url).where(Event.url.in_(event_urls))).all())
+    new_urls = [u for u in event_urls if u not in existing_urls]
+    run.detail = f"{len(event_urls)} urls from sitemap, {len(new_urls)} new"
+    run.finished_at = datetime.now(timezone.utc)
+    session.add(run)
+    return new_urls
+
+
 def crawl_listing(session: Session, organiser: Organiser) -> list[str]:
     """
     Crawl one organiser's listing page(s). Returns the event URLs that are
     new (not already stored) so the caller can decide how to hand them off
     (Pub/Sub in production, direct in-process call for local runs).
+
+    Prefers reading organiser.sitemap_url (see _crawl_from_sitemap) over
+    everything below it when one is known - only falls through to
+    listing_urls/clicking-through when no sitemap is known, or the known one
+    couldn't be resolved into anything.
     """
+    if organiser.sitemap_url:
+        event_urls = _crawl_from_sitemap(session, organiser)
+        if event_urls is not None:
+            return event_urls
+
     listing_urls = organiser.listing_urls or []
     if not listing_urls:
         listing_urls = _discover_listing_urls(session, organiser)
