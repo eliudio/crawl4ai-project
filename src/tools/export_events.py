@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_plus
 
+import markdown
 from sqlalchemy import select
 
 from services.db import session_scope
@@ -134,6 +135,19 @@ def _render_map(event: Event) -> str:
     """
 
 
+def _render_page_content(event: Event) -> str:
+    """Nested, collapsed-by-default section rendering `raw_markdown` as real HTML (option 2: convert server-side, no client JS)."""
+    if not event.raw_markdown:
+        return ""
+
+    rendered = markdown.markdown(event.raw_markdown, extensions=["extra", "sane_lists"])
+    return f"""
+          <details class="page-content">
+            <summary>Page content</summary>
+            <div class="markdown-body">{rendered}</div>
+          </details>"""
+
+
 def _render_event(event: Event) -> str:
     name = html.escape(event.name or f"(untitled event #{event.id})")
     badges = "".join(
@@ -158,6 +172,7 @@ def _render_event(event: Event) -> str:
           <div class="event-body">
             <table class="fields">{"".join(rows)}</table>
             <div class="map">{_render_map(event)}</div>
+            {_render_page_content(event)}
           </div>
         </details>"""
 
@@ -267,6 +282,61 @@ _CSS = """
     margin-top: 0.3rem;
   }
   .no-map { color: var(--muted); font-size: 0.9rem; }
+
+  details.page-content {
+    margin-top: 0.8rem;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem 0.8rem;
+  }
+  details.page-content > summary { font-size: 0.92rem; color: var(--muted); }
+  .markdown-body {
+    margin-top: 0.6rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.92rem;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .markdown-body h1, .markdown-body h2, .markdown-body h3,
+  .markdown-body h4, .markdown-body h5, .markdown-body h6 {
+    margin: 1em 0 0.4em;
+    line-height: 1.3;
+  }
+  .markdown-body h1 { font-size: 1.3rem; }
+  .markdown-body h2 { font-size: 1.15rem; }
+  .markdown-body h3 { font-size: 1.05rem; }
+  .markdown-body p { margin: 0.5em 0; }
+  .markdown-body a { color: var(--accent); }
+  .markdown-body img { max-width: 100%; border-radius: 4px; }
+  .markdown-body ul, .markdown-body ol { padding-left: 1.4em; }
+  .markdown-body blockquote {
+    margin: 0.5em 0;
+    padding: 0.2em 0.9em;
+    border-left: 3px solid var(--border);
+    color: var(--muted);
+  }
+  .markdown-body code {
+    background: var(--bg);
+    border-radius: 3px;
+    padding: 0.1em 0.35em;
+    font-size: 0.88em;
+  }
+  .markdown-body pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.7em 0.9em;
+    overflow-x: auto;
+  }
+  .markdown-body pre code { background: none; padding: 0; }
+  .markdown-body table { border-collapse: collapse; margin: 0.6em 0; }
+  .markdown-body th, .markdown-body td {
+    border: 1px solid var(--border);
+    padding: 0.3em 0.6em;
+  }
+  .markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
 
   @media (prefers-color-scheme: dark) {
     :root {
