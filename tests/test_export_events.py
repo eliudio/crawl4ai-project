@@ -21,6 +21,11 @@ import pytest
 from services.models import Event, EventDistance, EventStatus, Organiser, RaceType, Sport
 from tools import export_events
 
+# Captured before any test's autouse fixture monkeypatches export_events._fetch_rows (see
+# _no_real_db below) - the two tests that need the REAL query-building logic call this
+# directly instead of the (by-then-patched) module attribute.
+_real_fetch_rows = export_events._fetch_rows
+
 
 # ---------------------------------------------------------------------------
 # Pure formatting helpers
@@ -218,6 +223,58 @@ def test_render_sport_counts_events_and_distances_across_groups():
 
 
 # ---------------------------------------------------------------------------
+# _fetch_rows - checks the actual query it builds, without needing a real
+# database: a fake Session.execute just captures the statement instead of
+# running it, then we inspect its compiled SQL text directly.
+# ---------------------------------------------------------------------------
+
+class _CapturingSession:
+    def __init__(self):
+        self.captured_statement = None
+
+    def execute(self, stmt):
+        self.captured_statement = stmt
+        return []
+
+
+def test_fetch_rows_excludes_invalid_events():
+    # No export format should have to remember to filter these out itself - see
+    # the reported case, e.g. runthrough.co.uk's redirect-only "Running Tours" events.
+    session = _CapturingSession()
+    _real_fetch_rows(session)
+    compiled = str(session.captured_statement)
+    assert "events.status = " in compiled
+
+
+def test_fetch_rows_still_filters_by_organiser_id_when_given():
+    session = _CapturingSession()
+    _real_fetch_rows(session, organiser_id=7)
+    compiled = str(session.captured_statement)
+    assert "events.organiser_id = " in compiled
+    assert "events.status = " in compiled  # both filters present, not one replacing the other
+
+
+def test_fetch_rows_can_request_invalid_status_instead():
+    session = _CapturingSession()
+    _real_fetch_rows(session, status=EventStatus.INVALID)
+    # Render with literal_binds so the actual bound value (not just a ":status_1"
+    # placeholder) shows up in the compiled text - confirms it's really INVALID, not
+    # still defaulting to VALID.
+    compiled = str(session.captured_statement.compile(compile_kwargs={"literal_binds": True}))
+    assert "'INVALID'" in compiled
+
+
+def test_fetch_rows_status_none_omits_the_filter_entirely():
+    session = _CapturingSession()
+    _real_fetch_rows(session, status=None)
+    compiled = str(session.captured_statement)
+    # events.status still appears as a plain selected column either way - the thing
+    # that must be absent is a WHERE clause filtering on it at all.
+    assert "WHERE" not in compiled
+    assert "events.status = " not in compiled
+
+
+# ---------------------------------------------------------------------------
 # Top-level exports - _fetch_rows and session_scope monkeypatched, so no real
 # database is ever touched.
 # ---------------------------------------------------------------------------
@@ -259,7 +316,7 @@ def _no_real_db(monkeypatch, sample_rows):
         yield None  # never touched: _fetch_rows below ignores it entirely
 
     monkeypatch.setattr(export_events, "session_scope", fake_session_scope)
-    monkeypatch.setattr(export_events, "_fetch_rows", lambda session, organiser_id=None: sample_rows)
+    monkeypatch.setattr(export_events, "_fetch_rows", lambda session, organiser_id=None, status=None: sample_rows)
 
 
 def test_export_csv_writes_header_and_rows(tmp_path):
@@ -287,7 +344,7 @@ def test_export_csv_includes_invalid_event_status_and_reason(monkeypatch, tmp_pa
         invalid_reason="Page is just a redirect notice to an external site, no event details shown",
         date_text=None, location=None, raw_markdown=None, distances=[],
     )
-    monkeypatch.setattr(export_events, "_fetch_rows", lambda session, organiser_id=None: [(invalid_event, "Acme Runners")])
+    monkeypatch.setattr(export_events, "_fetch_rows", lambda session, organiser_id=None, status=None: [(invalid_event, "Acme Runners")])
 
     export_events.export_csv(tmp_path / "invalid.csv")
 
@@ -296,6 +353,61 @@ def test_export_csv_includes_invalid_event_status_and_reason(monkeypatch, tmp_pa
 
     assert rows[0]["status"] == "invalid"
     assert rows[0]["invalid_reason"] == "Page is just a redirect notice to an external site, no event details shown"
+
+
+# ---------------------------------------------------------------------------
+# export_invalid_events / status routing through _export_organiser_tree - each
+# export must request the status it's actually meant to show, not just whatever
+# _fetch_rows happens to default to.
+# ---------------------------------------------------------------------------
+
+def test_export_events_per_organiser_requests_valid_status(monkeypatch, tmp_path, sample_rows):
+    captured = {}
+
+    def fake_fetch_rows(session, organiser_id=None, status=None):
+        captured["status"] = status
+        return sample_rows
+
+    monkeypatch.setattr(export_events, "_fetch_rows", fake_fetch_rows)
+    export_events.export_events_per_organiser(tmp_path / "valid.html")
+
+    assert captured["status"] == EventStatus.VALID
+
+
+def test_export_invalid_events_requests_invalid_status_and_renders_reason(monkeypatch, tmp_path):
+    captured = {}
+    invalid_event = Event(
+        id=5, organiser_id=1, name="No event details available", sport="other",
+        status=EventStatus.INVALID, invalid_reason="Page is just a redirect notice to an external site, no event details shown",
+        date_text=None, location=None, raw_markdown=None, distances=[], url="https://acme.example/redirect",
+    )
+
+    def fake_fetch_rows(session, organiser_id=None, status=None):
+        captured["status"] = status
+        return [(invalid_event, "Acme Runners")] if status == EventStatus.INVALID else []
+
+    monkeypatch.setattr(export_events, "_fetch_rows", fake_fetch_rows)
+
+    total = export_events.export_invalid_events(tmp_path / "invalid.html")
+
+    assert captured["status"] == EventStatus.INVALID
+    assert total == 1
+    html_text = (tmp_path / "invalid.html").read_text(encoding="utf-8")
+    assert "<title>Invalid events</title>" in html_text
+    assert "<h1>Invalid events</h1>" in html_text
+    assert "No event details available" in html_text
+    assert "Page is just a redirect notice to an external site, no event details shown" in html_text
+    assert '<span class="badge badge-invalid">INVALID</span>' in html_text
+
+
+def test_export_invalid_events_empty_when_none_invalid(monkeypatch, tmp_path):
+    monkeypatch.setattr(export_events, "_fetch_rows", lambda session, organiser_id=None, status=None: [])
+
+    total = export_events.export_invalid_events(tmp_path / "invalid.html")
+
+    assert total == 0
+    html_text = (tmp_path / "invalid.html").read_text(encoding="utf-8")
+    assert "0 event(s) across 0 organiser(s)" in html_text
 
 
 def test_export_events_per_organiser_groups_by_organiser(tmp_path):
@@ -333,7 +445,7 @@ def test_export_events_per_organiser_respects_organiser_id_filter(monkeypatch, t
     # export function actually threads organiser_id through to it rather than ignoring it.
     captured = {}
 
-    def fake_fetch_rows(session, organiser_id=None):
+    def fake_fetch_rows(session, organiser_id=None, status=None):
         captured["organiser_id"] = organiser_id
         return [row for row in sample_rows if row[0].organiser_id == organiser_id] if organiser_id else sample_rows
 

@@ -1,23 +1,28 @@
 """
-Dumps the `events` table (joined with its organiser) to CSV, or to two
+Dumps the `events` table (joined with its organiser) to CSV, or to three
 self-contained HTML files, for ad-hoc inspection of what the pipeline has
 collected so far without needing `psql` open.
 
-Both HTML exports render an expand/collapse tree using plain <details>/
-<summary> (no JS needed), just grouped differently:
-- events_per_organiser.html: organiser -> its events -> each event's full
-  detail, plus a Google Maps link and embedded map per event where a
-  location is known.
-- events_per_event_type.html: sport -> standardised race type (see
-  race_types.py - "marathon", "10_k", "10_m", ...) -> the events offering
-  that distance, for browsing "show me every marathon" rather than
+All three HTML exports render an expand/collapse tree using plain <details>/
+<summary> (no JS needed), just grouped/filtered differently:
+- events_per_organiser.html: every VALID event, organiser -> its events ->
+  each event's full detail, plus a Google Maps link and embedded map per
+  event where a location is known.
+- events_per_event_type.html: every VALID event, sport -> standardised race
+  type (see race_types.py - "marathon", "10_k", "10_m", ...) -> the events
+  offering that distance, for browsing "show me every marathon" rather than
   per-organiser. A distance with no resolved race type (see
   EventDistance.race_type_id) still shows up, grouped under "uncategorised".
+- events_invalid.html: every INVALID event (see EventStatus - a crawled URL
+  that turned out to be a redirect notice, dead page, etc. with no real event
+  content), organiser -> events, same detail view as events_per_organiser.html
+  - for debugging what the LLM flagged as invalid and why, without wading
+  through every genuinely valid event to find them.
 
 Usage:
     python -m tools.export_events --format csv
     python -m tools.export_events --format html
-    python -m tools.export_events --format html --output out.html --output-by-type out2.html
+    python -m tools.export_events --format html --output out.html --output-by-type out2.html --output-invalid out3.html
     python -m tools.export_events --organiser-id 3
 """
 
@@ -39,6 +44,7 @@ DEFAULT_OUTPUT = {
     "csv": Path("c:/temp/crawl4ai/events/events_export.csv"),
     "html": Path("c:/temp/crawl4ai/events/events_per_organiser.html"),
     "html_by_type": Path("c:/temp/crawl4ai/events/events_per_event_type.html"),
+    "html_invalid": Path("c:/temp/crawl4ai/events/events_invalid.html"),
 }
 
 _UNCATEGORISED_SPORT = "uncategorised"
@@ -83,8 +89,13 @@ DETAIL_FIELDS = [
 ]
 
 
-def _fetch_rows(session, organiser_id: int | None = None):
-    """Every event joined with its organiser's name, grouped for display by organiser then event id."""
+def _fetch_rows(session, organiser_id: int | None = None, status: EventStatus | None = EventStatus.VALID):
+    """Every event matching `status` (default VALID) joined with its organiser's name, grouped
+    for display by organiser then event id. Defaulting to VALID means INVALID events (see
+    EventStatus - redirect notices, dead pages, etc. with no real event content) are excluded
+    from the normal exports without each one having to remember to filter them out itself;
+    export_invalid_events passes status=EventStatus.INVALID instead, for exactly the opposite
+    view - pass status=None for every status at once (not currently used by any export)."""
     stmt = (
         select(Event, Organiser.name)
         .join(Organiser, Organiser.id == Event.organiser_id)
@@ -93,6 +104,8 @@ def _fetch_rows(session, organiser_id: int | None = None):
         # raise DetachedInstanceError.
         .options(selectinload(Event.distances).selectinload(EventDistance.race_type))
     )
+    if status is not None:
+        stmt = stmt.where(Event.status == status)
     if organiser_id is not None:
         stmt = stmt.where(Event.organiser_id == organiser_id)
     stmt = stmt.order_by(Organiser.name, Event.id)
@@ -477,10 +490,15 @@ _CSS = """
 """
 
 
-def export_events_per_organiser(output_path: Path, organiser_id: int | None = None) -> int:
-    """Writes the organiser -> events -> details tree to a single HTML file. Returns the event count."""
+def _export_organiser_tree(output_path: Path, organiser_id: int | None, status: EventStatus | None, title: str) -> int:
+    """
+    Shared by export_events_per_organiser (VALID events, the normal export) and
+    export_invalid_events (INVALID events, for debugging what the LLM flagged and why)
+    - same organiser -> events -> details tree either way, just filtered to a different
+    status and titled differently. Returns the event count.
+    """
     with session_scope() as session:
-        rows = _fetch_rows(session, organiser_id)
+        rows = _fetch_rows(session, organiser_id, status=status)
 
         # Group in Python (rather than a GROUP BY query) - session_scope's connection is
         # closed by the time we render, and we need the full Event objects, not aggregates.
@@ -499,11 +517,11 @@ def export_events_per_organiser(output_path: Path, organiser_id: int | None = No
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Events per organiser</title>
+<title>{html.escape(title)}</title>
 <style>{_CSS}</style>
 </head>
 <body>
-  <h1>Events per organiser</h1>
+  <h1>{html.escape(title)}</h1>
   <p class="meta">{total} event(s) across {len(grouped)} organiser(s) &middot; generated {generated_at}</p>
   {organisers_html}
 </body>
@@ -512,6 +530,22 @@ def export_events_per_organiser(output_path: Path, organiser_id: int | None = No
     output_path.write_text(doc, encoding="utf-8")
     print(f"wrote {total} event(s) across {len(grouped)} organiser(s) to {output_path}")
     return total
+
+
+def export_events_per_organiser(output_path: Path, organiser_id: int | None = None) -> int:
+    """Writes the organiser -> events -> details tree to a single HTML file (VALID events only). Returns the event count."""
+    return _export_organiser_tree(output_path, organiser_id, EventStatus.VALID, "Events per organiser")
+
+
+def export_invalid_events(output_path: Path, organiser_id: int | None = None) -> int:
+    """
+    Writes the organiser -> events -> details tree for INVALID events only (see
+    EventStatus - a crawled URL that turned out to be a redirect notice, dead page, etc.
+    with no real event content). Useful for debugging what the LLM flagged as invalid and
+    why (each event's "Invalid reason" row/badge - see _render_event) without wading
+    through every genuinely valid event to find them. Returns the event count.
+    """
+    return _export_organiser_tree(output_path, organiser_id, EventStatus.INVALID, "Invalid events")
 
 
 def export_events_per_event_type(output_path: Path, organiser_id: int | None = None) -> int:
@@ -567,6 +601,7 @@ def main() -> None:
     parser.add_argument("--format", choices=["csv", "html"], default="html")
     parser.add_argument("--output", type=Path, default=None, help="output path (default: tools/data/events_export.csv, or events_per_organiser.html when --format html)")
     parser.add_argument("--output-by-type", type=Path, default=None, help="only used with --format html: path for the sport/race-type-grouped export (default: tools/data/events_per_event_type.html)")
+    parser.add_argument("--output-invalid", type=Path, default=None, help="only used with --format html: path for the INVALID-events debugging export (default: tools/data/events_invalid.html)")
     parser.add_argument("--organiser-id", type=int, default=None, help="only export events for this organiser id")
     args = parser.parse_args()
 
@@ -575,6 +610,7 @@ def main() -> None:
     else:
         export_events_per_organiser(args.output or DEFAULT_OUTPUT["html"], organiser_id=args.organiser_id)
         export_events_per_event_type(args.output_by_type or DEFAULT_OUTPUT["html_by_type"], organiser_id=args.organiser_id)
+        export_invalid_events(args.output_invalid or DEFAULT_OUTPUT["html_invalid"], organiser_id=args.organiser_id)
 
 
 if __name__ == "__main__":

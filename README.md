@@ -1,5 +1,15 @@
 ﻿# TODOs
 
+## Extend the export_events.py
+
+Extensd the export_events.py script to write an html with all invalid events.
+This is useful for debugging
+
+## cancerresearchuk.org
+
+Tthis organiser has a lot of "invalid" links which are actually not even events. 
+For example, one link is https://raceforlife.cancerresearchuk.org/, anoter link is https://raceforlife.cancerresearchuk.org/about-our-events
+
 ## code cleanup
 
 Ask AI to cleanup
