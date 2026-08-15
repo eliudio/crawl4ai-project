@@ -53,6 +53,23 @@ class CrawlStatus(PyEnum):
     SKIPPED = "skipped"
 
 
+class EventStatus(PyEnum):
+    """
+    VALID: the page actually describes a specific event.
+    INVALID: the crawled URL doesn't - e.g. it's just a redirect notice to
+    another site (confirmed in practice: runthrough.co.uk/event/running-tours-
+    copenhagen-marathon is literally just "We are redirecting you to
+    runnerretreats.com"), a dead/error page, or otherwise has no real event
+    content to extract. Distinct from the crawl failing outright (that's
+    CrawlStatus.FAILED / a None return from crawl_event) - this is a *successful*
+    crawl of a page that turns out not to be an event page at all, so it's worth
+    keeping the row (rather than silently discarding it) with the reason why.
+    """
+
+    VALID = "valid"
+    INVALID = "invalid"
+
+
 class Sport(PyEnum):
     """
     Fixed, closed vocabulary for RaceType.sport - unlike Event.sport (free text,
@@ -127,6 +144,14 @@ class Event(Base):
     start_location: Mapped[str | None] = mapped_column(String(512), nullable=True)
     finish_location: Mapped[str | None] = mapped_column(String(512), nullable=True)
     age_restriction_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # See EventStatus - defaults to VALID since most crawled URLs really are events;
+    # event_crawler.py sets this from the LLM's own is_valid_event/invalid_reason
+    # verdict (see llm_extractor.py) rather than us guessing from empty fields.
+    status: Mapped[EventStatus] = mapped_column(
+        Enum(EventStatus, name="event_status"), default=EventStatus.VALID
+    )
+    invalid_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     raw_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -131,6 +131,26 @@ def test_standard_triathlon_folds_onto_olympic(session):
     assert variant.distance_category == "olympic_triathlon"
 
 
+@pytest.mark.parametrize("wording", ["junior", "kids", "kids_race", "junior_race", "youth", "youth_race"])
+def test_junior_synonyms_fold_onto_one_row(session, wording):
+    # Confirmed in practice: "Junior Race" and every "Kids Race - Year N" age-group
+    # variant on the same page must all resolve to one row, not one per age group.
+    canonical = get_or_create_race_type(session, "running", "junior")
+    variant = get_or_create_race_type(session, "running", wording)
+    assert variant.id == canonical.id
+    assert variant.distance_category == "junior"
+
+
+def test_junior_race_type_exists_for_every_sport_independently(session):
+    # Also confirmed in practice: a junior race turned up under both running and
+    # cycling on the same organiser - each sport needs its own "junior" row.
+    running_junior = get_or_create_race_type(session, "running", "junior")
+    cycling_junior = get_or_create_race_type(session, "cycling", "junior")
+    assert running_junior.id != cycling_junior.id
+    assert running_junior.label == "running_junior"
+    assert cycling_junior.label == "cycling_junior"
+
+
 # ---------------------------------------------------------------------------
 # Fallbacks: missing/unrecognised sport, missing distance.
 # ---------------------------------------------------------------------------

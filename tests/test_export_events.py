@@ -18,7 +18,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from services.models import Event, EventDistance, Organiser, RaceType, Sport
+from services.models import Event, EventDistance, EventStatus, Organiser, RaceType, Sport
 from tools import export_events
 
 
@@ -160,6 +160,31 @@ def test_render_event_includes_url_link_when_present():
     assert 'href="https://example.com/event"' in rendered
 
 
+def test_render_event_valid_has_no_invalid_badge_or_reason_row():
+    event = Event(id=1, name="Real Event", sport="running", date_text=None, distances=[], raw_markdown=None, status=EventStatus.VALID)
+    rendered = export_events._render_event(event)
+    assert "badge-invalid" not in rendered
+    assert "Invalid reason" not in rendered
+
+
+def test_render_event_invalid_shows_badge_and_reason():
+    # The reported case: a page that's just a redirect notice, e.g.
+    # runthrough.co.uk/event/running-tours-copenhagen-marathon.
+    event = Event(
+        id=1, name="No event details available", sport="other", date_text=None, distances=[], raw_markdown=None,
+        status=EventStatus.INVALID, invalid_reason="Page is just a redirect notice to an external site, no event details shown",
+    )
+    rendered = export_events._render_event(event)
+    assert '<span class="badge badge-invalid">INVALID</span>' in rendered
+    assert "Page is just a redirect notice to an external site, no event details shown" in rendered
+
+
+def test_render_event_invalid_with_no_reason_shows_placeholder():
+    event = Event(id=1, name="X", sport=None, date_text=None, distances=[], raw_markdown=None, status=EventStatus.INVALID, invalid_reason=None)
+    rendered = export_events._render_event(event)
+    assert '<tr><th>Invalid reason</th><td class="invalid-reason"><span class="empty">&mdash;</span></td></tr>' in rendered
+
+
 # ---------------------------------------------------------------------------
 # _render_organiser / _render_sport - pluralisation and nesting
 # ---------------------------------------------------------------------------
@@ -202,12 +227,12 @@ def sample_rows():
     """Two organisers, three events, mirroring what _fetch_rows would return."""
     event1 = Event(
         id=1, organiser_id=1, url="https://acme.example/5k", name="Acme 5K", sport="running",
-        date_text="Sunday", location="Acme Park", raw_markdown=None,
+        status=EventStatus.VALID, date_text="Sunday", location="Acme Park", raw_markdown=None,
         distances=[EventDistance(distance_text="5K", price_text="£15", race_type=RaceType(label="running_5k", sport=Sport.RUNNING, distance_category="5k"))],
     )
     event2 = Event(
         id=2, organiser_id=1, url="https://acme.example/10k", name="Acme 10K", sport="running",
-        date_text="Sunday", location="Acme Park", raw_markdown=None,
+        status=EventStatus.VALID, date_text="Sunday", location="Acme Park", raw_markdown=None,
         distances=[
             EventDistance(distance_text="10K", price_text="£20", race_type=RaceType(label="running_10k", sport=Sport.RUNNING, distance_category="10k")),
             EventDistance(distance_text="Fun Run", price_text=None, race_type=None),
@@ -215,7 +240,7 @@ def sample_rows():
     )
     event3 = Event(
         id=3, organiser_id=2, url="https://beta.example/tri", name="Beta Triathlon", sport="triathlon",
-        date_text="Saturday", location="Beta Lake", raw_markdown=None,
+        status=EventStatus.VALID, date_text="Saturday", location="Beta Lake", raw_markdown=None,
         distances=[EventDistance(distance_text="Sprint Triathlon", price_text="£50", race_type=RaceType(label="triathlon_sprint_triathlon", sport=Sport.TRIATHLON, distance_category="sprint_triathlon"))],
     )
     return [
@@ -251,6 +276,26 @@ def test_export_csv_writes_header_and_rows(tmp_path):
     assert rows[0]["distances"] == "5K [running_5k]: £15"
     # event2 has one categorised and one uncategorised distance - both show up.
     assert rows[1]["distances"] == "10K [running_10k]: £20; Fun Run"
+    assert rows[0]["status"] == "valid"
+    assert rows[0]["invalid_reason"] == ""
+
+
+def test_export_csv_includes_invalid_event_status_and_reason(monkeypatch, tmp_path):
+    invalid_event = Event(
+        id=99, organiser_id=1, url="https://acme.example/redirect", name="No event details available",
+        sport="other", status=EventStatus.INVALID,
+        invalid_reason="Page is just a redirect notice to an external site, no event details shown",
+        date_text=None, location=None, raw_markdown=None, distances=[],
+    )
+    monkeypatch.setattr(export_events, "_fetch_rows", lambda session, organiser_id=None: [(invalid_event, "Acme Runners")])
+
+    export_events.export_csv(tmp_path / "invalid.csv")
+
+    with (tmp_path / "invalid.csv").open(encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+
+    assert rows[0]["status"] == "invalid"
+    assert rows[0]["invalid_reason"] == "Page is just a redirect notice to an external site, no event details shown"
 
 
 def test_export_events_per_organiser_groups_by_organiser(tmp_path):

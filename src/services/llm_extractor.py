@@ -19,6 +19,33 @@ _EVENT_SCHEMA_PROPERTIES: dict[str, Any] = {
         "type": "string",
         "description": "One of: running, cycling, triathlon, swimming, obstacle, other",
     },
+    "is_valid_event": {
+        "type": "boolean",
+        "description": (
+            "False if this page does NOT actually describe a specific event - e.g. it's "
+            "just a redirect notice ('We are redirecting you to https://example.com. "
+            "Continue to https://example.com' and nothing else - confirmed in practice on "
+            "runthrough.co.uk/event/running-tours-copenhagen-marathon), a dead/error page, "
+            "or otherwise has no genuine event-specific content (no real name, date, or "
+            "location - just navigation/boilerplate/an external link). True whenever there "
+            "IS genuine event content to read, even if some individual fields below end up "
+            "null because the page simply doesn't state them - a real event page missing "
+            "its price or age restriction is still a valid event, this is about whether the "
+            "page describes an event AT ALL, not about how complete it is.\n"
+            "If false: still answer 'name'/'sport' with your best minimal, honest label "
+            "(e.g. name 'No event details available', sport 'other') rather than leaving "
+            "them unanswered - but never invent a plausible-sounding date/location/price "
+            "that isn't actually shown; leave every other field null and distances empty."
+        ),
+    },
+    "invalid_reason": {
+        "type": ["string", "null"],
+        "description": (
+            "1 short sentence explaining why is_valid_event is false (e.g. 'Page is just a "
+            "redirect notice to an external site, no event details shown'). Null whenever "
+            "is_valid_event is true."
+        ),
+    },
     "summary": {"type": ["string", "null"], "description": "1-3 sentence rephrased summary of the event description"},
     "date_text": {"type": ["string", "null"], "description": "Date or date range, exactly as written on the page"},
     "location": {"type": ["string", "null"], "description": "Venue/city/postcode, as complete as the page allows"},
@@ -60,8 +87,14 @@ _EVENT_SCHEMA_PROPERTIES: dict[str, Any] = {
                         "transcribe the page's own phrase like 'middle_distance_triathlon'), "
                         "'ironman' (also called '140.6', 'Full Distance Triathlon', 'Long Distance "
                         "Triathlon' - always use 'ironman', never transcribe the page's own phrase).\n"
-                        "- Null if distance_text doesn't state an actual measurable distance "
-                        "(e.g. 'fun run', 'kids race' with no length given)."
+                        "4. A junior/kids/youth race entry - e.g. 'Junior Race', 'Kids Race - Year 3', "
+                        "'Kids Race - Reception & Year 1' - ALWAYS uses 'junior', regardless of which "
+                        "age/year group is named. Don't create separate categories per age group - "
+                        "every age-group variant of a junior/kids race on the same page is still just "
+                        "'junior'.\n"
+                        "- Null for anything that isn't itself a race/distance category at all (e.g. "
+                        "'Workshop', 'Training Night', a charity/fundraising place name, 'Inclusive "
+                        "Wave') - these aren't a distance OR a junior race, so don't force a label."
                     ),
                 },
             },
@@ -78,12 +111,15 @@ _EVENT_SCHEMA_PROPERTIES: dict[str, Any] = {
     },
     "age_restriction_text": {"type": ["string", "null"], "description": "Minimum age / age category rules, if stated"},
 }
-_EVENT_REQUIRED = ["name", "sport"]
+_EVENT_REQUIRED = ["name", "sport", "is_valid_event"]
 
 _EVENT_SYSTEM_PROMPT = (
     "You are a precise sports event data extractor. Extract only what is "
     "explicitly present on the page. Use null for any field that is missing "
-    "or unclear. Do not invent values."
+    "or unclear. Do not invent values. Before extracting anything else, check "
+    "whether the page actually describes a specific event at all (see "
+    "is_valid_event) - a redirect notice, dead page, or other non-event content "
+    "must be flagged as invalid rather than mined for plausible-looking details."
 )
 
 _LISTING_SCHEMA_PROPERTIES: dict[str, Any] = {
@@ -376,8 +412,18 @@ def extract_event_fields(url: str, markdown: str) -> dict[str, Any] | None:
         print(f"{datetime.now():%H:%M:%S} - extraction failed for {url}: {type(e).__name__}: {e}")
         return None
 
-    result = {key: fields.get(key) for key in _EVENT_SCHEMA_PROPERTIES if key != "distances"}
+    result = {
+        key: fields.get(key)
+        for key in _EVENT_SCHEMA_PROPERTIES
+        if key not in ("distances", "is_valid_event", "invalid_reason")
+    }
     result["distances"] = _normalize_distances(fields.get("distances"))
+    # Defaults to True (valid) rather than False on a malformed/missing response - an
+    # extraction glitch shouldn't silently mark a perfectly good event invalid.
+    is_valid_event = fields.get("is_valid_event")
+    result["is_valid_event"] = is_valid_event if isinstance(is_valid_event, bool) else True
+    invalid_reason = fields.get("invalid_reason")
+    result["invalid_reason"] = str(invalid_reason).strip() if (not result["is_valid_event"] and invalid_reason) else None
     return result
 
 

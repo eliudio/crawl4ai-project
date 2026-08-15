@@ -33,7 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from services.db import session_scope
-from services.models import Event, EventDistance, Organiser
+from services.models import Event, EventDistance, EventStatus, Organiser
 
 DEFAULT_OUTPUT = {
     "csv": Path("c:/temp/crawl4ai/events/events_export.csv"),
@@ -50,6 +50,8 @@ CSV_FIELDNAMES = [
     "organiser_name",
     "name",
     "sport",
+    "status",
+    "invalid_reason",
     "date_text",
     "location",
     "start_location",
@@ -65,6 +67,8 @@ CSV_FIELDNAMES = [
 
 # Fields shown in the HTML event detail tree, in display order. Distances are rendered
 # separately (see _render_distances) since they're a list, not a single scalar value.
+# Status is rendered separately too (see _render_event's INVALID badge) rather than
+# appearing as a plain row here.
 DETAIL_FIELDS = [
     ("Sport", "sport"),
     ("Date", "date_text"),
@@ -121,6 +125,8 @@ def export_csv(output_path: Path, organiser_id: int | None = None) -> int:
                     "organiser_name": organiser_name,
                     "name": event.name,
                     "sport": event.sport,
+                    "status": event.status.value if event.status else EventStatus.VALID.value,
+                    "invalid_reason": event.invalid_reason,
                     "date_text": event.date_text,
                     "location": event.location,
                     "start_location": event.start_location,
@@ -207,10 +213,15 @@ def _render_event(event: Event, organiser_name: str | None = None) -> str:
         for v in (event.sport, event.date_text)
         if v
     )
+    if event.status == EventStatus.INVALID:
+        badges += '<span class="badge badge-invalid">INVALID</span>'
 
     rows = []
     if organiser_name is not None:
         rows.append(f"<tr><th>Organiser</th><td>{html.escape(organiser_name)}</td></tr>")
+    if event.status == EventStatus.INVALID:
+        reason_html = html.escape(event.invalid_reason) if event.invalid_reason else '<span class="empty">&mdash;</span>'
+        rows.append(f'<tr><th>Invalid reason</th><td class="invalid-reason">{reason_html}</td></tr>')
     for label, attr in DETAIL_FIELDS:
         value = getattr(event, attr)
         value_html = html.escape(str(value)) if value else '<span class="empty">&mdash;</span>'
@@ -346,6 +357,8 @@ _CSS = """
     font-weight: 500;
     vertical-align: middle;
   }
+  .badge-invalid { background: #fde2e2; color: #c81e1e; }
+  .invalid-reason { color: #c81e1e; }
 
   .event-body { margin-top: 0.6rem; }
   table.fields { width: 100%; border-collapse: collapse; margin-bottom: 0.8rem; }
@@ -458,6 +471,8 @@ _CSS = """
       --muted: #9aa1ab;
     }
     .badge { background: #22314f; }
+    .badge-invalid { background: #4a1f1f; color: #ff8a8a; }
+    .invalid-reason { color: #ff8a8a; }
   }
 """
 

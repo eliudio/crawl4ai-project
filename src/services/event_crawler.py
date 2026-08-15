@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from services import llm_extractor, robots, scraper_client
-from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event, EventDistance
+from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event, EventDistance, EventStatus
 from services.race_types import get_or_create_race_type
 
 
@@ -93,6 +93,11 @@ def crawl_event(
         event.start_location = fields.get("start_location")
         event.finish_location = fields.get("finish_location")
         event.age_restriction_text = fields.get("age_restriction_text")
+        # See EventStatus/llm_extractor's is_valid_event - a page that's just a redirect
+        # notice, dead page, etc. is kept (not discarded) so it's visible for review, but
+        # flagged rather than treated as a normal event with unusually empty fields.
+        event.status = EventStatus.VALID if fields.get("is_valid_event", True) else EventStatus.INVALID
+        event.invalid_reason = fields.get("invalid_reason")
 
         # Re-extraction (a changed page) replaces the whole set rather than trying to
         # match old vs. new entries one-to-one - distance wording can change between
@@ -119,7 +124,7 @@ def crawl_event(
         event.last_crawled_at = now
 
         run.status = CrawlStatus.SUCCESS
-        run.detail = "extracted"
+        run.detail = "extracted" if event.status == EventStatus.VALID else f"extracted (invalid event: {event.invalid_reason})"
         run.finished_at = datetime.now(timezone.utc)
         session.add(run)
         return event

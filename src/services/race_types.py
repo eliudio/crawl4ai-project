@@ -37,6 +37,13 @@ _CATEGORY_ALIASES = {
     "full_distance_triathlon": "ironman",
     "140_6": "ironman",
     "standard_triathlon": "olympic_triathlon",
+    # Junior/kids races (confirmed in practice: "Junior Race", "Kids Race - Year 3", etc,
+    # each a separate distance_text but all the same category, not one per age group).
+    "kids": "junior",
+    "kids_race": "junior",
+    "junior_race": "junior",
+    "youth": "junior",
+    "youth_race": "junior",
 }
 
 
