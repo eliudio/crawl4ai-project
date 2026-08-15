@@ -24,8 +24,25 @@ _EVENT_SCHEMA_PROPERTIES: dict[str, Any] = {
     "location": {"type": ["string", "null"], "description": "Venue/city/postcode, as complete as the page allows"},
     "start_location": {"type": ["string", "null"], "description": "Where the event starts, if stated separately from location"},
     "finish_location": {"type": ["string", "null"], "description": "Where the event finishes, if stated separately from location"},
-    "distance_text": {"type": ["string", "null"], "description": "Distance(s) on offer, exactly as written (e.g. '5k, 10k, half marathon')"},
-    "price_text": {"type": ["string", "null"], "description": "Entry price(s), exactly as written"},
+    "distances": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "distance_text": {"type": "string", "description": "One distance on offer, exactly as written (e.g. '5k', 'Half Marathon')"},
+                "price_text": {"type": ["string", "null"], "description": "This distance's own entry price, exactly as written, if stated"},
+            },
+            "required": ["distance_text"],
+        },
+        "description": (
+            "Every distance option on offer, each as its own entry - most events offer "
+            "more than one distance (e.g. 5k, 10k, half marathon in one race), each "
+            "potentially with its own price. Still use one entry even for a single-"
+            "distance event. If the page gives one overall price covering every distance "
+            "rather than a price per distance, repeat that same price on each entry. "
+            "Empty array if no distance is stated anywhere on the page."
+        ),
+    },
     "age_restriction_text": {"type": ["string", "null"], "description": "Minimum age / age category rules, if stated"},
 }
 _EVENT_REQUIRED = ["name", "sport"]
@@ -326,7 +343,26 @@ def extract_event_fields(url: str, markdown: str) -> dict[str, Any] | None:
         print(f"{datetime.now():%H:%M:%S} - extraction failed for {url}: {type(e).__name__}: {e}")
         return None
 
-    return {key: fields.get(key) for key in _EVENT_SCHEMA_PROPERTIES}
+    result = {key: fields.get(key) for key in _EVENT_SCHEMA_PROPERTIES if key != "distances"}
+    result["distances"] = _normalize_distances(fields.get("distances"))
+    return result
+
+
+def _normalize_distances(raw: Any) -> list[dict[str, str | None]]:
+    """Guards against a malformed/partial LLM response - never trust it's actually a list of well-formed entries."""
+    if not isinstance(raw, list):
+        return []
+
+    distances: list[dict[str, str | None]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        distance_text = entry.get("distance_text")
+        if not distance_text:
+            continue
+        price_text = entry.get("price_text")
+        distances.append({"distance_text": str(distance_text), "price_text": str(price_text) if price_text else None})
+    return distances
 
 
 def discover_listing_urls(homepage_url: str, markdown: str, candidate_links: list[str]) -> list[str]:

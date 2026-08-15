@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from services import firecrawl_client, llm_extractor, robots
-from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event
+from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event, EventDistance
 
 
 def _hash(markdown: str) -> str:
@@ -91,9 +91,17 @@ def crawl_event(
         event.location = fields.get("location")
         event.start_location = fields.get("start_location")
         event.finish_location = fields.get("finish_location")
-        event.distance_text = fields.get("distance_text")
-        event.price_text = fields.get("price_text")
         event.age_restriction_text = fields.get("age_restriction_text")
+
+        # Re-extraction (a changed page) replaces the whole set rather than trying to
+        # match old vs. new entries one-to-one - distance wording can change between
+        # crawls, so there's no stable key to update in place. cascade="all,
+        # delete-orphan" on Event.distances takes care of removing the old rows.
+        event.distances.clear()
+        for i, d in enumerate(fields.get("distances") or []):
+            event.distances.append(
+                EventDistance(distance_text=d["distance_text"], price_text=d.get("price_text"), sort_order=i)
+            )
         event.raw_markdown = markdown
         event.content_hash = content_hash
         event.last_seen_at = now

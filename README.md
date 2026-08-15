@@ -8,13 +8,7 @@ Ask AI to cleanup
 3) write unit tests to cover 100% of code
 4) restructure the code, new directory structure
 
-## enhance extracting the event
-
-We don't seem to get all information. An event can have multiple distances. Actually in most cases it does. 
-Each distance has potentially a different price. 
-So the database needs to cater for this as well as the scraping / interpretation of the markdown needs to include this.
-
-## run on server
+## run on google
 
 # Server hosted
 

@@ -105,8 +105,6 @@ class Event(Base):
     location: Mapped[str | None] = mapped_column(String(512), nullable=True)
     start_location: Mapped[str | None] = mapped_column(String(512), nullable=True)
     finish_location: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    distance_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    price_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
     age_restriction_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     raw_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -119,6 +117,29 @@ class Event(Base):
     last_crawled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     organiser: Mapped["Organiser"] = relationship(back_populates="events")
+    # Most events offer more than one distance, each with its own price (e.g. "5k: £15",
+    # "10k: £20") - that's a one-to-many relationship, not a pair of scalar columns on
+    # Event, so it gets its own table. order_by preserves the order distances were listed
+    # on the page (sort_order), and delete-orphan means re-extraction (event_crawler.py
+    # clears event.distances before re-appending) doesn't leave stale rows behind.
+    distances: Mapped[list["EventDistance"]] = relationship(
+        back_populates="event", cascade="all, delete-orphan", order_by="EventDistance.sort_order"
+    )
+
+
+class EventDistance(Base):
+    """One distance option on an event (e.g. "10k", "Half Marathon"), with that distance's own price, if stated."""
+
+    __tablename__ = "event_distances"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    distance_text: Mapped[str] = mapped_column(String(255))
+    price_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    event: Mapped["Event"] = relationship(back_populates="distances")
 
 
 class CrawlRun(Base):

@@ -23,6 +23,7 @@ from urllib.parse import quote_plus
 
 import markdown
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from services.db import session_scope
 from services.models import Event, Organiser
@@ -42,8 +43,7 @@ CSV_FIELDNAMES = [
     "location",
     "start_location",
     "finish_location",
-    "distance_text",
-    "price_text",
+    "distances",
     "age_restriction_text",
     "url",
     "summary",
@@ -52,15 +52,14 @@ CSV_FIELDNAMES = [
     "last_crawled_at",
 ]
 
-# Fields shown in the HTML event detail tree, in display order.
+# Fields shown in the HTML event detail tree, in display order. Distances are rendered
+# separately (see _render_distances) since they're a list, not a single scalar value.
 DETAIL_FIELDS = [
     ("Sport", "sport"),
     ("Date", "date_text"),
     ("Location", "location"),
     ("Start location", "start_location"),
     ("Finish location", "finish_location"),
-    ("Distance", "distance_text"),
-    ("Price", "price_text"),
     ("Age restriction", "age_restriction_text"),
     ("Summary", "summary"),
     ("First seen", "first_seen_at"),
@@ -71,11 +70,26 @@ DETAIL_FIELDS = [
 
 def _fetch_rows(session, organiser_id: int | None = None):
     """Every event joined with its organiser's name, grouped for display by organiser then event id."""
-    stmt = select(Event, Organiser.name).join(Organiser, Organiser.id == Event.organiser_id)
+    stmt = (
+        select(Event, Organiser.name)
+        .join(Organiser, Organiser.id == Event.organiser_id)
+        # Eager-load: export_html renders after `session_scope` has closed the session,
+        # so a lazy load of event.distances at that point would raise DetachedInstanceError.
+        .options(selectinload(Event.distances))
+    )
     if organiser_id is not None:
         stmt = stmt.where(Event.organiser_id == organiser_id)
     stmt = stmt.order_by(Organiser.name, Event.id)
     return list(session.execute(stmt))
+
+
+def _format_distance(distance) -> str:
+    return f"{distance.distance_text}: {distance.price_text}" if distance.price_text else distance.distance_text
+
+
+def _distances_summary(event: Event) -> str:
+    """One-line "5k: £15; 10k: £20" summary, for the flat CSV format."""
+    return "; ".join(_format_distance(d) for d in event.distances)
 
 
 def export_csv(output_path: Path, organiser_id: int | None = None) -> int:
@@ -98,8 +112,7 @@ def export_csv(output_path: Path, organiser_id: int | None = None) -> int:
                     "location": event.location,
                     "start_location": event.start_location,
                     "finish_location": event.finish_location,
-                    "distance_text": event.distance_text,
-                    "price_text": event.price_text,
+                    "distances": _distances_summary(event),
                     "age_restriction_text": event.age_restriction_text,
                     "url": event.url,
                     "summary": event.summary,
@@ -133,6 +146,17 @@ def _render_map(event: Event) -> str:
     <p><a class="maps-link" href="{_maps_link_url(location)}" target="_blank" rel="noopener">Open "{loc}" in Google Maps &#8599;</a></p>
     <iframe class="maps-embed" src="{_maps_embed_url(location)}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
     """
+
+
+def _render_distances(event: Event) -> str:
+    if not event.distances:
+        return '<p class="empty">No distances listed.</p>'
+
+    rows = []
+    for d in event.distances:
+        price_html = html.escape(d.price_text) if d.price_text else '<span class="empty">&mdash;</span>'
+        rows.append(f"<tr><td>{html.escape(d.distance_text)}</td><td>{price_html}</td></tr>")
+    return f'<table class="distances"><thead><tr><th>Distance</th><th>Price</th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
 
 
 def _render_page_content(event: Event) -> str:
@@ -171,6 +195,10 @@ def _render_event(event: Event) -> str:
           <summary>{name}{badges}</summary>
           <div class="event-body">
             <table class="fields">{"".join(rows)}</table>
+            <div class="distances-section">
+              <h4>Distances</h4>
+              {_render_distances(event)}
+            </div>
             <div class="map">{_render_map(event)}</div>
             {_render_page_content(event)}
           </div>
@@ -271,6 +299,24 @@ _CSS = """
   }
   table.fields th { width: 9.5rem; color: var(--muted); font-weight: 500; }
   .empty { color: var(--muted); }
+
+  .distances-section { margin-bottom: 0.8rem; }
+  .distances-section h4 {
+    margin: 0 0 0.3rem;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  table.distances { width: 100%; max-width: 26rem; border-collapse: collapse; }
+  table.distances th, table.distances td {
+    text-align: left;
+    padding: 0.25rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.92rem;
+  }
+  table.distances th { color: var(--muted); font-weight: 500; }
 
   .maps-link { color: var(--accent); text-decoration: none; font-size: 0.92rem; }
   .maps-link:hover { text-decoration: underline; }
