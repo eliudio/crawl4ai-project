@@ -14,7 +14,7 @@ import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from services import firecrawl_client, llm_extractor, robots
+from services import llm_extractor, robots, scraper_client
 from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event, EventDistance
 
 
@@ -59,7 +59,7 @@ def crawl_event(
         return existing
 
     try:
-        markdown, _links, _html, _url = firecrawl_client.scrape(event_url, want_links=False)
+        markdown, _links, _html, _url = scraper_client.scrape(event_url, want_links=False)
         content_hash = _hash(markdown)
 
         if check_mode == "hash-check" and existing and existing.content_hash == content_hash:

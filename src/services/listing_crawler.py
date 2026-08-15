@@ -48,7 +48,7 @@ import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from services import firecrawl_client, llm_extractor, robots, sitemap_crawler
+from services import llm_extractor, robots, scraper_client, sitemap_crawler
 from services.link_filters import filter_candidate_links
 from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event, Organiser
 
@@ -83,7 +83,7 @@ def _validate_selector(html: str, selector: str | None) -> str | None:
     An LLM-picked CSS selector is wrong in two costly ways, and this catches
     both before it's ever used for a real click: matching zero elements
     (e.g. built from an attribute like Angular's `classname` that only
-    appears in server-rendered markup, not the live DOM Firecrawl's browser
+    appears in server-rendered markup, not the live DOM the scraper's browser
     actually clicks against - every click then hangs and burns 3 retries
     with exponential backoff on something that can never succeed) or
     matching more than one (a generic class shared with unrelated buttons
@@ -215,8 +215,8 @@ def _crawl_paginated_same_url(
     earlier page.
 
     Replays clicks from a fresh page load each round (page N needs N-1
-    clicks), using firecrawl_client.scrape's normal formats=["markdown"]
-    path - Firecrawl's own conversion, with real main-content extraction,
+    clicks), using scraper_client.scrape's normal formats=["markdown"] path -
+    the active backend's own conversion, with real main-content extraction,
     not a raw-html workaround.
 
     An earlier version of this tried to detect a URL query-param pattern
@@ -244,7 +244,7 @@ def _crawl_paginated_same_url(
         actions = _click_actions(selector, presses=presses)
         print(f"DEBUG paginate page {page_num}: clicking {selector!r} x{presses}")
         try:
-            page_markdown, page_links, _html, _final_url = firecrawl_client.scrape(
+            page_markdown, page_links, _html, _final_url = scraper_client.scrape(
                 page_url, want_links=True, actions=actions
             )
         except Exception as e:
@@ -276,7 +276,7 @@ def _discover_listing_urls(session: Session, organiser: Organiser) -> list[str]:
     all three cases: events on the homepage itself, a single dedicated
     listing page, or several (e.g. per-category) listing pages.
     """
-    markdown, links, _html, _url = firecrawl_client.scrape(organiser.homepage_url, want_links=True)
+    markdown, links, _html, _url = scraper_client.scrape(organiser.homepage_url, want_links=True)
     candidates = filter_candidate_links(links, organiser.homepage_url)
     discovered = llm_extractor.discover_listing_urls(organiser.homepage_url, markdown, candidates)
 
@@ -317,7 +317,7 @@ def _analyze_page(page_url: str, homepage_url: str) -> tuple[list[str], list[str
     that, not a tuning knob.
     """
     try:
-        markdown, links, html, _url = firecrawl_client.scrape(page_url, want_links=True, want_html=True)
+        markdown, links, html, _url = scraper_client.scrape(page_url, want_links=True, want_html=True)
         probe = llm_extractor.detect_load_more(page_url, html)
         interaction_type = probe["interaction_type"]
         # Fixed at round 0 and never replaced: each later round reloads the page from
@@ -359,7 +359,7 @@ def _analyze_page(page_url: str, homepage_url: str) -> tuple[list[str], list[str
                 print(f"DEBUG round {round_num}: scrolling x{steps}")
 
             try:
-                round_markdown, round_links, round_html, _url = firecrawl_client.scrape(
+                round_markdown, round_links, round_html, _url = scraper_client.scrape(
                     page_url, want_links=True, want_html=True, actions=actions
                 )
             except Exception as e:

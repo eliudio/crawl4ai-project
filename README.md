@@ -7,8 +7,27 @@ Ask AI to cleanup
 2) introduce code coverage tool
 3) write unit tests to cover 100% of code
 4) restructure the code, new directory structure
+4.1) introduce a subdirectory for common, local and server
+4.2) put specific python scripts in these directories, specific to these purposes, common, local and server
+5) 
 
 ## run on google
+
+Is the current project work-able to deploy on google?
+I have started this as a google project and local_runner
+Then I have iterated over it, running local_runner
+Now that local_runner works, I want to verify how it can be run on google
+Did we make change on local_runner that need to be applied for google.
+
+
+## sitemap can be a gz file
+
+in this case, it should be decompressed and used as decompressed file
+
+# llm consoles
+
+https://console.x.ai
+https://console.anthropic.com
 
 # Server hosted
 
@@ -49,8 +68,13 @@ prototype code elsewhere in `src/`:
 
 - `config.py` / `db.py` / `models.py` — env-driven settings and the
   Postgres schema (`organisers`, `events`, `crawl_runs`).
-- `firecrawl_client.py` — calls Firecrawl's hosted API (no self-hosting, no
-  VPN — Firecrawl's cloud service handles proxy rotation/anti-bot instead).
+- `scraper_client.py` — picks which scraper backend actually fetches a page:
+  self-hosted `crawl4ai_client.py` by default (free beyond Cloud Run/laptop
+  compute), falling back to `firecrawl_client.py`'s hosted API (paid, but
+  handles proxy rotation/anti-bot for the rare site that needs it)
+  automatically if crawl4ai's own attempt fails. Controlled by
+  `SCRAPER_BACKEND` (`crawl4ai` default, or `firecrawl` to always use
+  Firecrawl) — see "Running locally" below for the `local_runner.py` flag.
 - `llm_extractor.py` — extracts structured event fields from page markdown;
   provider is pluggable (`grok` or `anthropic`) via `LLM_PROVIDER`.
 - `listing_crawler.py` / `event_crawler.py` — the two pipeline stages.
@@ -113,7 +137,6 @@ docker start events-db && docker ps --filter "name=events-db" --format "table {{
 4. Optional: Drop all data from postgres
 ```
 docker exec -it events-db psql -U postgres -c "DROP DATABASE events;"
-docker exec -it events-db psql -U postgres -c "CREATE DATABASE events;"
 docker exec -it events-db psql -U postgres -d postgres -c "CREATE DATABASE events;"
 ```
 
@@ -122,6 +145,9 @@ docker exec -it events-db psql -U postgres -d postgres -c "CREATE DATABASE event
 cd src
 poetry run python -m services.local_runner --limit 3
 ```
+Add `--scraper-backend firecrawl` to force Firecrawl's hosted API instead of
+the self-hosted `crawl4ai` default (e.g. to compare the two, or if
+self-hosting is misbehaving on a given organiser) — see `scraper_client.py`.
 
 ### Deploying (GCP)
 

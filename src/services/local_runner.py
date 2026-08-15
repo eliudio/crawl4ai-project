@@ -15,6 +15,7 @@ import argparse
 from sqlalchemy import select
 
 from services import event_crawler, listing_crawler
+from services.config import settings
 from services.db import init_db, session_scope
 from services.models import Organiser
 from tools.seed_organisers import seed_from_csv
@@ -25,7 +26,14 @@ def run(
     organiser_id: int | None = None,
     dry_run: bool = False,
     check_mode: str = "hash-check",
+    scraper_backend: str | None = None,
 ) -> None:
+    # See services/scraper_client.py: "crawl4ai" (self-hosted, no per-page cost) is the
+    # default; "firecrawl" always uses Firecrawl's hosted API instead. None leaves
+    # whatever's already configured via SCRAPER_BACKEND/.env untouched.
+    if scraper_backend is not None:
+        settings.scraper_backend = scraper_backend
+
     init_db()
     seed_from_csv()
 
@@ -68,5 +76,18 @@ if __name__ == "__main__":
         help="hash-check (default): always fetch, skip re-extraction if content is unchanged. "
         "url-check: skip entirely (no fetch) if the URL is already stored.",
     )
+    parser.add_argument(
+        "--scraper-backend",
+        choices=["crawl4ai", "firecrawl"],
+        default="crawl4ai",
+        help="crawl4ai (default): self-hosted, no per-page cost, falls back to Firecrawl "
+        "automatically on failure. firecrawl: always use Firecrawl's hosted API.",
+    )
     args = parser.parse_args()
-    run(limit=args.limit, organiser_id=args.organiser_id, dry_run=args.dry_run, check_mode=args.check_mode)
+    run(
+        limit=args.limit,
+        organiser_id=args.organiser_id,
+        dry_run=args.dry_run,
+        check_mode=args.check_mode,
+        scraper_backend=args.scraper_backend,
+    )

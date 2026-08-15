@@ -44,5 +44,12 @@ class Settings(BaseSettings):
     respect_robots_txt: bool = True
     user_agent: str = "Mozilla/5.0 (compatible; EventBot/1.0; +https://example.invalid/bot)"
 
+    # --- Scraper backend (see scraper_client.py) ---
+    # "crawl4ai" (default): self-hosted headless browser, no per-page cost - used for
+    # every organiser, falling back to Firecrawl automatically on failure.
+    # "firecrawl": skip crawl4ai entirely and always use Firecrawl - an escape hatch to
+    # roll back instantly (e.g. self-hosting turns out unreliable) without a code change.
+    scraper_backend: str = "crawl4ai"
+
 
 settings = Settings()
