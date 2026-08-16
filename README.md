@@ -1,19 +1,19 @@
 ﻿# TODOs
 
-## Extend the export_events.py
+## summary and reword
 
-Extensd the export_events.py script to write an html with all invalid events.
-This is useful for debugging
+1) it seems the summary can have funny characters like &#39; instead of - I guess - '. Why?
+2) ask AI to generate alternative wording for the current summary, so that we don't suffer copyright issues
+2) ask AI to generate a summary of the current summary
 
-## cancerresearchuk.org
-
-Tthis organiser has a lot of "invalid" links which are actually not even events. 
-For example, one link is https://raceforlife.cancerresearchuk.org/, anoter link is https://raceforlife.cancerresearchuk.org/about-our-events
+## 
 
 ## code cleanup
 
 Ask AI to cleanup
-1) what is each file and is it still relevant?
+1) what is each file and is it still relevant? for example, is grok/key.py still being used? remember: everything
+   we currently do starts with scripts from services or tools. So I guess, I'm basically asking if directory 
+   grok and events are still relevant
 2) introduce code coverage tool
 3) write unit tests to cover 100% of code
 4) restructure the code, new directory structure

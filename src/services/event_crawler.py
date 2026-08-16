@@ -15,12 +15,46 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from services import llm_extractor, robots, scraper_client, structured_data
+from services.config import settings
 from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event, EventDistance, EventStatus
 from services.race_types import get_or_create_race_type
 
 
 def _hash(markdown: str) -> str:
     return hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+
+
+# Confirmed dead - the page itself says so, not just "the scraper/LLM couldn't make
+# sense of it" (which could just as easily be a transient anti-bot block or a rendering
+# glitch, worth retrying next run). 410 Gone is the explicit "never coming back" cousin
+# of 404.
+_DEAD_LINK_STATUS_CODES = {404, 410}
+
+
+def _dead_link_status(url: str) -> int | None:
+    """
+    Cheap upfront check for a URL that's definitively gone, before ever spending a
+    browser scrape + LLM call on it. Plain requests.head/get straight to the site (not
+    through crawl4ai/Firecrawl) - what actually caught this in practice was a listing
+    page linking to an event whose real URL now 404s (confirmed with
+    urllib.request.urlopen), which crawl4ai still "successfully" rendered as a
+    near-empty error page, so extract_event_fields kept returning None and the URL,
+    never having become an Event row, kept being reported as "new" and retried every
+    single run.
+
+    Returns the HTTP status code if the request could be made at all, None if it
+    couldn't (timeout, connection refused, blocked by anti-bot, ...) - those are
+    inconclusive, not evidence the page is dead, so callers must fall through to the
+    normal scrape attempt rather than treat None as "confirmed alive".
+    """
+    headers = {"User-Agent": settings.user_agent}
+    try:
+        response = requests.head(url, headers=headers, timeout=10, allow_redirects=True)
+        if response.status_code == 405:  # some servers reject HEAD outright
+            response = requests.get(url, headers=headers, timeout=10, allow_redirects=True, stream=True)
+        return response.status_code
+    except requests.exceptions.RequestException:
+        return None
 
 
 def crawl_event(
@@ -60,6 +94,23 @@ def crawl_event(
         return existing
 
     try:
+        status_code = _dead_link_status(event_url)
+        if status_code in _DEAD_LINK_STATUS_CODES:
+            if existing:
+                event = existing
+            else:
+                event = Event(organiser_id=organiser_id, url=event_url, first_seen_at=now)
+                session.add(event)
+            event.status = EventStatus.INVALID
+            event.invalid_reason = f"HTTP {status_code} fetching the page"
+            event.last_seen_at = now
+            event.last_crawled_at = now
+            run.status = CrawlStatus.SUCCESS
+            run.detail = f"confirmed dead link (HTTP {status_code})"
+            run.finished_at = datetime.now(timezone.utc)
+            session.add(run)
+            return event
+
         # want_html=True even though this is otherwise a markdown-only fetch - needed for
         # structured_data.extract_event_fields to read the page's own schema.org JSON-LD
         # (see below), which markdown conversion strips out along with every other <script>.

@@ -34,10 +34,16 @@ def session():
 
 @pytest.fixture(autouse=True)
 def _stub_pipeline(monkeypatch):
-    """Everything up to the point of failure: allowed by robots, scrapes fine,
-    no JSON-LD, LLM returns fields - so the test's own injected failure (see
-    test below) is the only thing that goes wrong."""
+    """Everything up to the point of failure: allowed by robots, dead-link
+    preflight inconclusive (so it falls through instead of hitting the real
+    network), scrapes fine, no JSON-LD, LLM returns fields - so the test's own
+    injected failure (see test below) is the only thing that goes wrong."""
     monkeypatch.setattr(event_crawler.robots, "is_allowed", lambda url: True)
+    monkeypatch.setattr(
+        event_crawler.requests,
+        "head",
+        lambda url, **kw: (_ for _ in ()).throw(event_crawler.requests.exceptions.ConnectionError()),
+    )
     monkeypatch.setattr(
         event_crawler.scraper_client,
         "scrape",
@@ -82,3 +88,84 @@ def test_exception_during_build_rolls_back_session(monkeypatch, session):
     # But the failure is still recorded for visibility.
     run = session.query(CrawlRun).one()
     assert "IntegrityError" in run.detail
+
+
+# ---------------------------------------------------------------------------
+# Dead-link preflight: the raceforlife.cancerresearchuk.org incident - a
+# genuinely 404ing event URL that crawl4ai still "successfully" rendered as a
+# near-empty page, so extract_event_fields kept returning None, no Event row
+# was ever stored, and listing_crawler kept reporting the URL as "new" and
+# retrying it every single run forever.
+# ---------------------------------------------------------------------------
+
+class _FakeResponse:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+def test_confirmed_dead_link_marks_event_invalid_without_scraping(monkeypatch, session):
+    monkeypatch.setattr(event_crawler.requests, "head", lambda url, **kw: _FakeResponse(404))
+    scrape_calls = []
+    monkeypatch.setattr(
+        event_crawler.scraper_client, "scrape", lambda *a, **kw: scrape_calls.append((a, kw))
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/gone")
+
+    assert scrape_calls == []
+    assert event is not None
+    assert event.status == event_crawler.EventStatus.INVALID
+    assert "404" in event.invalid_reason
+    session.commit()  # must not corrupt the session for whatever runs next
+
+    # The URL is now a real Event row - the next listing crawl's "already in the
+    # database" check (see listing_crawler.py) will exclude it from "new" from now on.
+    assert session.query(Event).filter_by(url="https://example.org/event/gone").count() == 1
+
+
+def test_confirmed_dead_link_updates_existing_row_not_a_duplicate(monkeypatch, session):
+    existing = Event(organiser_id=1, url="https://example.org/event/gone", name="Old Name")
+    session.add(existing)
+    session.commit()
+
+    monkeypatch.setattr(event_crawler.requests, "head", lambda url, **kw: _FakeResponse(410))
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/gone")
+
+    assert event.id == existing.id
+    assert session.query(Event).count() == 1
+    assert event.status == event_crawler.EventStatus.INVALID
+
+
+def test_inconclusive_preflight_falls_through_to_normal_scrape(monkeypatch, session):
+    # A blocked/timed-out direct request isn't evidence the page is dead - must
+    # still attempt the real scrape rather than mark it invalid on a guess.
+    monkeypatch.setattr(
+        event_crawler.requests,
+        "head",
+        lambda url, **kw: (_ for _ in ()).throw(event_crawler.requests.exceptions.ConnectTimeout()),
+    )
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {"name": "Real Event", "sport": "running", "distances": []},
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/real")
+
+    assert event.status == event_crawler.EventStatus.VALID
+    assert event.name == "Real Event"
+
+
+def test_non_dead_status_code_falls_through_to_normal_scrape(monkeypatch, session):
+    # A 200 (or any code outside _DEAD_LINK_STATUS_CODES) is not a dead link either.
+    monkeypatch.setattr(event_crawler.requests, "head", lambda url, **kw: _FakeResponse(200))
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {"name": "Real Event", "sport": "running", "distances": []},
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/real")
+
+    assert event.status == event_crawler.EventStatus.VALID
