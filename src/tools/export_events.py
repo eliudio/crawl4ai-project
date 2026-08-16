@@ -263,7 +263,7 @@ def _render_organiser(organiser_name: str, events: list[Event]) -> str:
     name = html.escape(organiser_name)
     events_html = "".join(_render_event(e) for e in events)
     return f"""
-      <details class="organiser" open>
+      <details class="organiser">
         <summary>{name} <span class="count">({len(events)} event{"s" if len(events) != 1 else ""})</span></summary>
         <div class="events">{events_html}</div>
       </details>"""
@@ -288,7 +288,7 @@ def _render_sport(sport_label: str, distances_by_label: dict[str, list]) -> str:
         _render_distance_group(label, entries) for label, entries in sorted(distances_by_label.items())
     )
     return f"""
-      <details class="sport" open>
+      <details class="sport">
         <summary>{html.escape(sport_label)} <span class="count">({total} event{"s" if total != 1 else ""} across {len(distances_by_label)} distance{"s" if len(distances_by_label) != 1 else ""})</span></summary>
         <div class="distances-by-sport">{distances_html}</div>
       </details>"""
@@ -489,6 +489,19 @@ _CSS = """
   }
 """
 
+# Shared by all three HTML exports - a plain sibling file next to whichever html
+# output_path is currently being written (see _write_css), rather than inlined into
+# every <style> block. All three normally land in the same directory
+# (DEFAULT_OUTPUT), so this ends up written once and just re-read by the browser for
+# each; --output/--output-by-type/--output-invalid pointing elsewhere still each get
+# their own copy alongside them, since a <link> is only ever relative to its own file.
+_CSS_FILENAME = "events_style.css"
+
+
+def _write_css(output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / _CSS_FILENAME).write_text(_CSS, encoding="utf-8")
+
 
 def _export_organiser_tree(output_path: Path, organiser_id: int | None, status: EventStatus | None, title: str) -> int:
     """
@@ -507,7 +520,7 @@ def _export_organiser_tree(output_path: Path, organiser_id: int | None, status: 
             group = grouped.setdefault(event.organiser_id, {"name": organiser_name, "events": []})
             group["events"].append(event)
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_css(output_path.parent)
 
     total = sum(len(g["events"]) for g in grouped.values())
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -518,7 +531,7 @@ def _export_organiser_tree(output_path: Path, organiser_id: int | None, status: 
 <head>
 <meta charset="utf-8">
 <title>{html.escape(title)}</title>
-<style>{_CSS}</style>
+<link rel="stylesheet" href="{_CSS_FILENAME}">
 </head>
 <body>
   <h1>{html.escape(title)}</h1>
@@ -571,7 +584,7 @@ def export_events_per_event_type(output_path: Path, organiser_id: int | None = N
                     type_label = _UNCATEGORISED_LABEL
                 grouped.setdefault(sport_label, {}).setdefault(type_label, []).append((event, organiser_name, d))
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_css(output_path.parent)
 
     total = sum(len(entries) for distances in grouped.values() for entries in distances.values())
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -582,7 +595,7 @@ def export_events_per_event_type(output_path: Path, organiser_id: int | None = N
 <head>
 <meta charset="utf-8">
 <title>Events per race type</title>
-<style>{_CSS}</style>
+<link rel="stylesheet" href="{_CSS_FILENAME}">
 </head>
 <body>
   <h1>Events per race type</h1>

@@ -440,6 +440,35 @@ def test_export_events_per_event_type_groups_by_sport_and_distance(tmp_path):
     assert "Acme Runners" in html_text  # organiser shown here, unlike the per-organiser export
 
 
+# ---------------------------------------------------------------------------
+# CSS: a shared sibling file next to whichever HTML output is written, not
+# inlined into a <style> block in every export.
+# ---------------------------------------------------------------------------
+
+def test_html_export_writes_css_as_sibling_file_not_inline(tmp_path):
+    output_path = tmp_path / "per_organiser.html"
+    export_events.export_events_per_organiser(output_path)
+
+    html_text = output_path.read_text(encoding="utf-8")
+    assert "<style>" not in html_text
+    assert f'<link rel="stylesheet" href="{export_events._CSS_FILENAME}">' in html_text
+
+    css_path = tmp_path / export_events._CSS_FILENAME
+    assert css_path.exists()
+    assert "details" in css_path.read_text(encoding="utf-8")
+
+
+def test_css_file_written_alongside_each_distinct_output_directory(tmp_path):
+    organiser_dir = tmp_path / "organiser"
+    by_type_dir = tmp_path / "by_type"
+
+    export_events.export_events_per_organiser(organiser_dir / "per_organiser.html")
+    export_events.export_events_per_event_type(by_type_dir / "per_type.html")
+
+    assert (organiser_dir / export_events._CSS_FILENAME).exists()
+    assert (by_type_dir / export_events._CSS_FILENAME).exists()
+
+
 def test_export_events_per_organiser_respects_organiser_id_filter(monkeypatch, tmp_path, sample_rows):
     # _fetch_rows is normally responsible for filtering by organiser_id - confirm the
     # export function actually threads organiser_id through to it rather than ignoring it.

@@ -19,6 +19,7 @@ Handles both shapes a robots.txt `Sitemap:` entry can point to:
   then that one is fetched and used as the url-sitemap above.
 """
 
+import gzip
 from xml.etree import ElementTree
 
 import requests
@@ -27,6 +28,7 @@ from services import llm_extractor
 from services.link_filters import filter_candidate_links
 
 _TIMEOUT = 15
+_GZIP_MAGIC = b"\x1f\x8b"
 
 
 def _strip_ns(tag: str) -> str:
@@ -40,7 +42,17 @@ def _strip_ns(tag: str) -> str:
 def _fetch_xml(url: str) -> ElementTree.Element:
     response = requests.get(url, timeout=_TIMEOUT)
     response.raise_for_status()
-    return ElementTree.fromstring(response.content)
+    content = response.content
+    # A *.xml.gz sitemap (confirmed in practice: jurassiccoast10k.co.uk/sitemap.xml.gz)
+    # is the gzip-compressed file itself, not gzip-over-the-wire - the server sends it
+    # with no Content-Encoding: gzip header (requests/urllib3 only auto-decompresses
+    # that), so response.content is still the raw compressed bytes here and has to be
+    # gunzipped by hand before it's valid XML. Detected by magic number rather than the
+    # URL's own .gz suffix or the response's Content-Type, since neither is reliably
+    # set by every server that does this.
+    if content[:2] == _GZIP_MAGIC:
+        content = gzip.decompress(content)
+    return ElementTree.fromstring(content)
 
 
 def _child_locs(root: ElementTree.Element, wrapper_tag: str) -> list[str]:

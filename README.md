@@ -1,9 +1,5 @@
 ﻿# TODOs
 
-## sitemap can be a gz file
-
-in this case, it should be decompressed and used as decompressed file
-
 ## summary and reword
 
 1) it seems the summary can have funny characters like &#39; instead of - I guess - '. Why?
@@ -12,7 +8,7 @@ in this case, it should be decompressed and used as decompressed file
 
 ## Move the project to rompje.com
 
-## Change the name of the project
+## Change the name of the project to eyeonrace.com ?
 
 ## code cleanup
 
@@ -243,28 +239,24 @@ Which platform(s) will be best? What will run where?
 - drop claude.ai subscription
 - Add type of race, length of race, add frequency: yearly, monthly, weekly, daily, single event
 
-# Name
-* böt.com
-* doubledotbot.com
-* 2dotbot.com
-* twodotbot.com
-* frøya.com
-* bọt.com
-* bõt.com
-* hobblez.com
 
-# What?
+# Requirements
+
+Initially:
+1. Scrape events from as many organisers as possible. Server side. 24x7 scraping. Don't copy aggregators, only organisers. Respect robots.txt
 1. Race db. Find a race
-2. Booking.com for races.
+2. Indicate races you've done, with time, ... Upload photos, ... Link to Strava / Garmin
+3. Community of people
+4. Map overview, with races, flags where you've ran, where other's ran, ...
+
+
+Then:
+1. A booking system, like Booking.com for races.
    * (small, local) organizers can create a race
    * no commission
    * members can book to join
    * some races are only references
-3. History of races you've done, with time, ... Upload photos, ... Link to Strava / Garmin
-4. Community of people
-5. Map overview, with races, flags where you've ran, where other's ran, ...
-6. Stripe pay direct to the customer
-7. Full database copy isn't ideal, so exclude aggregators
+2. Stripe pay direct to the customer
 8. Potentially request organizers if ok
 
 # To consider event sources:

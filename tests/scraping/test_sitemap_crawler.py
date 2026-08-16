@@ -16,6 +16,7 @@ _run_llm boundary are monkeypatched with canned responses.
 """
 
 import csv
+import gzip
 
 import pytest
 import requests
@@ -226,6 +227,38 @@ def test_get_event_urls_none_on_fetch_failure(monkeypatch):
     assert sitemap_crawler.get_event_urls(
         "https://example.com/sitemap.xml", "https://example.com/",
     ) is None
+
+
+_GZIPPED_URLSET_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>https://jurassiccoast10k.co.uk/event/lyme-regis-10k</loc></url>
+<url><loc>https://jurassiccoast10k.co.uk/event/west-bay-10k</loc></url>
+</urlset>
+"""
+
+
+def test_get_event_urls_gzip_compressed_sitemap_is_decompressed(monkeypatch):
+    # Confirmed in practice (jurassiccoast10k.co.uk/sitemap.xml.gz): served as raw
+    # gzip bytes with no Content-Encoding: gzip header, so requests/urllib3 never
+    # auto-decompresses it - response.content really is still gzip-compressed here.
+    def fake_get(url, timeout=None):
+        assert url == "https://jurassiccoast10k.co.uk/sitemap.xml.gz"
+        response = requests.Response()
+        response.status_code = 200
+        response._content = gzip.compress(_GZIPPED_URLSET_XML.encode("utf-8"))
+        return response
+
+    monkeypatch.setattr(sitemap_crawler.requests, "get", fake_get)
+
+    urls = sitemap_crawler.get_event_urls(
+        "https://jurassiccoast10k.co.uk/sitemap.xml.gz",
+        "https://jurassiccoast10k.co.uk/",
+    )
+
+    assert urls == [
+        "https://jurassiccoast10k.co.uk/event/lyme-regis-10k",
+        "https://jurassiccoast10k.co.uk/event/west-bay-10k",
+    ]
 
 
 def test_get_event_urls_none_on_unexpected_root_element(monkeypatch):
