@@ -1,12 +1,18 @@
 ﻿# TODOs
 
+## sitemap can be a gz file
+
+in this case, it should be decompressed and used as decompressed file
+
 ## summary and reword
 
 1) it seems the summary can have funny characters like &#39; instead of - I guess - '. Why?
 2) ask AI to generate alternative wording for the current summary, so that we don't suffer copyright issues
 2) ask AI to generate a summary of the current summary
 
-## 
+## Move the project to rompje.com
+
+## Change the name of the project
 
 ## code cleanup
 
@@ -33,9 +39,6 @@ Now that local_runner works, I want to verify how it can be run on google
 Did we make change on local_runner that need to be applied for google.
 
 
-## sitemap can be a gz file
-
-in this case, it should be decompressed and used as decompressed file
 
 # llm consoles
 
