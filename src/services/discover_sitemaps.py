@@ -21,6 +21,8 @@ from urllib.parse import urljoin
 
 import requests
 
+from services.config import settings
+
 SEED_CSV = Path(__file__).parent / "data" / "organisers_seed.csv"
 _TIMEOUT = 10
 _DELAY_BETWEEN_REQUESTS = 0.3  # be polite - this hits ~170 different sites in one run
@@ -67,7 +69,10 @@ def discover_sitemaps(csv_path: Path = SEED_CSV) -> None:
         backoff = _RETRY_BACKOFF
         for attempt in range(1, _RETRIES + 1):
             try:
-                response = requests.get(url, timeout=_TIMEOUT)
+                # Same identity services.robots evaluates this domain's rules
+                # against (see robots.py's own robots.txt fetch) - consistent
+                # across every request this pipeline makes to a given site.
+                response = requests.get(url, headers={"User-Agent": settings.user_agent}, timeout=_TIMEOUT)
                 response.raise_for_status()
                 error = None
                 break

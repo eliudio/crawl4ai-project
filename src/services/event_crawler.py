@@ -77,6 +77,13 @@ def crawl_event(
     )
 
     if not robots.is_allowed(event_url):
+        # This is what a caller's own "ok"/"FAILED" print (see local_runner.py,
+        # main.py) can't tell apart on its own - crawl_event returning None here
+        # looks identical to a genuine scrape/extraction failure from the outside.
+        # ROBOTS-SKIP is the one grep-able marker every skip site in this codebase
+        # uses (see also listing_crawler.py, sitemap_crawler.py) so this case is
+        # never mistaken for a real failure while reading/searching the log.
+        print(f"ROBOTS-SKIP: {event_url} (event)")
         run.status = CrawlStatus.SKIPPED
         run.detail = "disallowed by robots.txt"
         run.finished_at = datetime.now(timezone.utc)

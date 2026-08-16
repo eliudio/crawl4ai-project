@@ -15,13 +15,22 @@ directly, so neither needs to know or care which one actually served a call.
 
 from datetime import datetime
 
-from services import crawl4ai_client, firecrawl_client
+from services import crawl4ai_client, firecrawl_client, robots
 from services.config import settings
 
 
 def scrape(
     url: str, want_links: bool = False, want_html: bool = False, actions: list[dict] | None = None
 ) -> tuple[str, list[str], str, str]:
+    # Single choke point every event/listing/pagination/"load more" fetch goes
+    # through regardless of backend - so a domain's own Crawl-delay is honoured
+    # across repeated fetches of the very same URL too (a "load more" round-loop
+    # or numbered-pager replay hits this same page many times in a row), not just
+    # once per higher-level "process this URL" decision. Applies to Firecrawl too,
+    # even though it varies the source IP via its own proxy rotation - Crawl-delay
+    # is the site protecting its own aggregate request rate, not a per-IP thing.
+    robots.wait_for_crawl_delay(url)
+
     if settings.scraper_backend == "firecrawl":
         return firecrawl_client.scrape(url, want_links=want_links, want_html=want_html, actions=actions)
 

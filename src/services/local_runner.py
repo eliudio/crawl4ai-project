@@ -6,7 +6,8 @@ Cloud Run. Production uses main.py's HTTP handlers, triggered by Pub/Sub.
 Usage:
     python -m services.local_runner --limit 3
     python -m services.local_runner --organiser-id 42
-    python -m services.local_runner --limit 3 --dry-run  # discover event URLs but don't crawl/store them, just print
+    python -m services.local_runner --mode dry-run  # discover event URLs but don't crawl/store them, just print
+    python -m services.local_runner --mode sanity-check  # crawl only 1 event per organiser - a quick smoke test across all of them
     python -m services.local_runner --check-mode url-check  # skip re-crawl of any URL already stored, changed or not
 """
 
@@ -25,10 +26,20 @@ from tools.seed_organisers import seed_from_csv
 def run(
     limit: int | None = None,
     organiser_id: int | None = None,
-    dry_run: bool = False,
+    mode: str = "normal",
     check_mode: str = "hash-check",
     scraper_backend: str | None = None,
 ) -> None:
+    """
+    mode "normal" (default): crawl every new event URL found for each organiser.
+    mode "dry-run": discover new event URLs but don't crawl/store them, just print
+    them - for previewing what a real run would touch.
+    mode "sanity-check": crawl only the first new event URL found per organiser -
+    confirms the pipeline works end-to-end (listing discovery + one real event
+    crawl/extraction/store) for every organiser without paying to crawl every
+    single one of its events. The opposite trade-off from --limit: fewer events
+    per organiser instead of fewer organisers.
+    """
     # See services/scraper_client.py: "crawl4ai" (self-hosted, no per-page cost) is the
     # default; "firecrawl" always uses Firecrawl's hosted API instead. None leaves
     # whatever's already configured via SCRAPER_BACKEND/.env untouched.
@@ -52,10 +63,18 @@ def run(
             new_urls = listing_crawler.crawl_listing(session, organiser)
             print(f"{organiser.name}: {len(new_urls)} new event URL(s)")
 
-        for url in new_urls:
-            if dry_run:
+        if mode == "dry-run":
+            for url in new_urls:
                 print(f"  [dry-run] {url}")
-                continue
+            continue
+
+        urls_to_crawl = new_urls
+        if mode == "sanity-check":
+            urls_to_crawl = new_urls[:1]
+            if len(new_urls) > 1:
+                print(f"  [sanity-check] crawling 1 of {len(new_urls)} new event URL(s)")
+
+        for url in urls_to_crawl:
             try:
                 with session_scope() as session:
                     event = event_crawler.crawl_event(session, organiser.id, url, check_mode=check_mode)
@@ -76,9 +95,13 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--organiser-id", type=int, default=None)
     parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print each discovered event URL instead of crawling and storing it.",
+        "--mode",
+        choices=["normal", "dry-run", "sanity-check"],
+        default="normal",
+        help="normal (default): crawl every new event URL found for each organiser. "
+        "dry-run: discover new event URLs but don't crawl/store them, just print. "
+        "sanity-check: crawl only the first new event URL per organiser - a quick "
+        "smoke test across every organiser rather than a full crawl.",
     )
     parser.add_argument(
         "--check-mode",
@@ -98,7 +121,7 @@ if __name__ == "__main__":
     run(
         limit=args.limit,
         organiser_id=args.organiser_id,
-        dry_run=args.dry_run,
+        mode=args.mode,
         check_mode=args.check_mode,
         scraper_backend=args.scraper_backend,
     )

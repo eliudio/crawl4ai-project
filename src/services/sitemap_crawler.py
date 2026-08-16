@@ -24,7 +24,8 @@ from xml.etree import ElementTree
 
 import requests
 
-from services import llm_extractor
+from services import llm_extractor, robots
+from services.config import settings
 from services.link_filters import filter_candidate_links
 
 _TIMEOUT = 15
@@ -40,7 +41,19 @@ def _strip_ns(tag: str) -> str:
 
 
 def _fetch_xml(url: str) -> ElementTree.Element:
-    response = requests.get(url, timeout=_TIMEOUT)
+    # Covers both callers below (the top-level sitemap and, for a sitemap index, the
+    # one sub-sitemap select_events_sitemap picked) - a robots.txt-advertised sitemap
+    # is usually fine to read (that's how it got advertised in the first place), but
+    # not guaranteed, and the Crawl-delay it declares still applies to this request.
+    if not robots.is_allowed(url):
+        # Same grep-able marker as event_crawler.py/listing_crawler.py's own
+        # skips - get_event_urls's own except-block print below would otherwise
+        # read just like any other fetch failure (network error, bad XML, ...).
+        print(f"ROBOTS-SKIP: {url} (sitemap)")
+        raise PermissionError(f"disallowed by robots.txt: {url}")
+    robots.wait_for_crawl_delay(url)
+
+    response = requests.get(url, headers={"User-Agent": settings.user_agent}, timeout=_TIMEOUT)
     response.raise_for_status()
     content = response.content
     # A *.xml.gz sitemap (confirmed in practice: jurassiccoast10k.co.uk/sitemap.xml.gz)

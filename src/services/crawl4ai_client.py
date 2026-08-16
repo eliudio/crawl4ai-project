@@ -22,9 +22,16 @@ from crawl4ai.content_filter_strategy import PruningContentFilter
 from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from services.config import settings
+
 _EXCLUDED_TAGS = ["nav", "header", "footer", "aside", "script", "style", "noscript"]
 
-_BROWSER_CONFIG = BrowserConfig(headless=True, verbose=False)
+# Identifies honestly as settings.user_agent (the same identity robots.py's own
+# is_allowed()/wait_for_crawl_delay() evaluate a site's rules against) rather than
+# whatever real-Chrome UA crawl4ai defaults to - unlike firecrawl_client.py (which
+# deliberately leaves Firecrawl's own stealth/anti-bot handling alone), this is a
+# plain self-hosted browser with no anti-bot pretense to preserve.
+_BROWSER_CONFIG = BrowserConfig(headless=True, verbose=False, user_agent=settings.user_agent)
 # Mirrors firecrawl_client's only_main_content=True: PruningContentFilter strips
 # boilerplate (nav/widgets/ads) the way Firecrawl's Readability-style extraction
 # does - only applied for event detail pages (want_links=False), same as Firecrawl.

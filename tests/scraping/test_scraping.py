@@ -24,6 +24,7 @@ from services.listing_crawler import (
     _find_click_selector,
     _resolve_click_selector,
 )
+from services.models import Organiser
 
 
 class _FakeFirecrawl:
@@ -238,6 +239,84 @@ def test_single_page_site_needs_no_interaction(monkeypatch):
     assert next_page_url is None
     # No load-more/pager - exactly the one, unclicked scrape.
     assert fake.calls == [0]
+
+
+# ---------------------------------------------------------------------------
+# _discover_listing_urls - robots.txt must gate the very first homepage fetch
+# too (an organiser with no listing_urls yet), not just the listing-page loop
+# _analyze_page/_crawl_one_listing_url already checks.
+# ---------------------------------------------------------------------------
+
+class _FakeSession:
+    """Only .add() is ever called by _discover_listing_urls - no real DB needed."""
+
+    def __init__(self):
+        self.added: list = []
+
+    def add(self, obj):
+        self.added.append(obj)
+
+
+def test_discover_listing_urls_respects_robots_disallow(monkeypatch, capsys):
+    organiser = Organiser(homepage_url="https://example.com/")
+    session = _FakeSession()
+
+    monkeypatch.setattr(listing_crawler.robots, "is_allowed", lambda url: False)
+    monkeypatch.setattr(
+        listing_crawler.scraper_client, "scrape",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not scrape a robots-disallowed homepage")),
+    )
+
+    result = listing_crawler._discover_listing_urls(session, organiser)
+
+    assert result == []
+    assert session.added == []  # organiser.listing_urls was never even touched/persisted
+    # A robots skip must print its own grep-able marker - otherwise it's
+    # indistinguishable in the log from a genuine scrape failure.
+    assert "ROBOTS-SKIP: https://example.com/ (listing discovery)" in capsys.readouterr().out
+
+
+def test_discover_listing_urls_scrapes_when_allowed(monkeypatch):
+    organiser = Organiser(homepage_url="https://example.com/")
+    session = _FakeSession()
+
+    monkeypatch.setattr(listing_crawler.robots, "is_allowed", lambda url: True)
+    monkeypatch.setattr(
+        listing_crawler.scraper_client, "scrape",
+        lambda url, want_links=False: ("markdown", ["https://example.com/events"], "", url),
+    )
+    monkeypatch.setattr(listing_crawler, "filter_candidate_links", lambda links, homepage: links)
+    monkeypatch.setattr(
+        listing_crawler.llm_extractor, "discover_listing_urls",
+        lambda homepage, markdown, candidates: candidates,
+    )
+
+    result = listing_crawler._discover_listing_urls(session, organiser)
+
+    assert result == ["https://example.com/events"]
+    assert organiser.listing_urls == ["https://example.com/events"]
+    assert session.added == [organiser]
+
+
+def test_crawl_one_listing_url_respects_robots_disallow_and_logs_it(monkeypatch, capsys):
+    organiser = Organiser(homepage_url="https://example.com/")
+    organiser.id = 1
+    session = _FakeSession()
+
+    monkeypatch.setattr(listing_crawler.robots, "is_allowed", lambda url: False)
+    monkeypatch.setattr(
+        listing_crawler, "_analyze_page",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not analyze a robots-disallowed listing page")),
+    )
+
+    new_urls = listing_crawler._crawl_one_listing_url(
+        session, organiser, "https://example.com/events", seen=set(),
+    )
+
+    assert new_urls == []
+    # Same grep-able marker as the homepage-discovery skip above - a listing
+    # page skipped mid-pagination must be just as visible in the log.
+    assert "ROBOTS-SKIP: https://example.com/events (listing)" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

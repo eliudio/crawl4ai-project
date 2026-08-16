@@ -169,3 +169,28 @@ def test_non_dead_status_code_falls_through_to_normal_scrape(monkeypatch, sessio
     event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/real")
 
     assert event.status == event_crawler.EventStatus.VALID
+
+
+# ---------------------------------------------------------------------------
+# robots.txt skip must be clearly logged - crawl_event returning None here
+# looks identical, from local_runner.py's/main.py's own "ok"/"FAILED" print,
+# to a genuine scrape/extraction failure. The ROBOTS-SKIP marker is what makes
+# the two distinguishable in the log (see also listing_crawler.py/
+# sitemap_crawler.py's own skip sites, which use the same marker).
+# ---------------------------------------------------------------------------
+
+def test_robots_disallowed_event_is_logged_clearly(monkeypatch, session, capsys):
+    monkeypatch.setattr(event_crawler.robots, "is_allowed", lambda url: False)
+    monkeypatch.setattr(
+        event_crawler.scraper_client, "scrape",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not scrape a robots-disallowed event")),
+    )
+
+    result = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/blocked")
+
+    assert result is None
+    assert "ROBOTS-SKIP: https://example.org/event/blocked (event)" in capsys.readouterr().out
+
+    run = session.query(CrawlRun).one()
+    assert run.status == event_crawler.CrawlStatus.SKIPPED
+    assert run.detail == "disallowed by robots.txt"

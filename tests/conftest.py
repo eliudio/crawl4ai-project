@@ -12,10 +12,29 @@ any test itself asserts or patches.
 """
 
 import pytest
+from protego import Protego
 
+from services import robots
 from services.config import settings
 
 
 @pytest.fixture(autouse=True)
 def _force_firecrawl_backend(monkeypatch):
     monkeypatch.setattr(settings, "scraper_backend", "firecrawl")
+
+
+@pytest.fixture(autouse=True)
+def _stub_robots_network(monkeypatch):
+    """
+    services.robots fetches robots.txt over the real network (is_allowed(), now
+    also called from sitemap_crawler.py; wait_for_crawl_delay(), called from
+    scraper_client.scrape()/sitemap_crawler.py) - without this, every test
+    anywhere in the suite that exercises a scrape/crawl/sitemap path would make
+    a live HTTP call the first time it saw a given domain. Stubbed to "no
+    robots.txt found" (the network-equivalent of a 404) so is_allowed() stays
+    permissive and wait_for_crawl_delay() no-ops everywhere by default.
+    tests/test_robots.py overrides this fixture by name (pytest's documented
+    override-by-name mechanism) to exercise the real fetch/parse/throttle logic
+    instead, with its own canned requests.get responses.
+    """
+    monkeypatch.setattr(robots, "_parser_for", lambda domain_root: Protego.parse(""))

@@ -3847,6 +3847,18 @@ files = [
 ]
 
 [[package]]
+name = "protego"
+version = "0.6.2"
+description = "Pure-Python robots.txt parser with support for modern conventions"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "protego-0.6.2-py3-none-any.whl", hash = "sha256:714de21d82527c9be900066c3211b266985dd6a19b6e70c57e033fc1a589f3ff"},
+    {file = "protego-0.6.2.tar.gz", hash = "sha256:88ff004544ce44e61269cc6f8735f7837d12e09bb77619fc94fbb26b72e5d137"},
+]
+
+[[package]]
 name = "proto-plus"
 version = "1.28.2"
 description = "Beautiful, Pythonic protocol buffers"
@@ -6203,4 +6215,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "39a22b7c854de68b322ac9e3afcc5cd03160422659f0af5b818b3336f2b8a6bb"
+content-hash = "a86b73931faed4f1f4f03d9dddafe49595130c7f65fabc81187c6caf229981fb"

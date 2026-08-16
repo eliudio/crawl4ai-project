@@ -276,6 +276,10 @@ def _discover_listing_urls(session: Session, organiser: Organiser) -> list[str]:
     all three cases: events on the homepage itself, a single dedicated
     listing page, or several (e.g. per-category) listing pages.
     """
+    if not robots.is_allowed(organiser.homepage_url):
+        print(f"ROBOTS-SKIP: {organiser.homepage_url} (listing discovery)")
+        return []
+
     markdown, links, _html, _url = scraper_client.scrape(organiser.homepage_url, want_links=True)
     candidates = filter_candidate_links(links, organiser.homepage_url)
     discovered = llm_extractor.discover_listing_urls(organiser.homepage_url, markdown, candidates)
@@ -442,6 +446,10 @@ def _crawl_one_listing_url(
         )
 
         if not robots.is_allowed(page_url):
+            # See event_crawler.py's own ROBOTS-SKIP print - same grep-able marker,
+            # so a skipped listing page isn't silently indistinguishable from one
+            # that genuinely failed to scrape/analyze.
+            print(f"ROBOTS-SKIP: {page_url} (listing)")
             run.status = CrawlStatus.SKIPPED
             run.detail = "disallowed by robots.txt"
             run.finished_at = datetime.now(timezone.utc)

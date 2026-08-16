@@ -71,7 +71,7 @@ def test_discover_sitemaps_rewrites_csv(tmp_path, monkeypatch):
         "https://no-sitemap.example.com/robots.txt": "User-agent: *\nDisallow: /private/\n",
     }
 
-    def fake_get(url, timeout=None):
+    def fake_get(url, headers=None, timeout=None):
         if url not in robots_by_url:
             raise requests.ConnectionError(f"no fake response for {url}")
         response = requests.Response()
@@ -157,7 +157,7 @@ _EVENTS_SUBSITEMAP_XML = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 def _fake_get(xml_by_url: dict[str, str]):
-    def fake_get(url, timeout=None):
+    def fake_get(url, headers=None, timeout=None):
         if url not in xml_by_url:
             raise requests.ConnectionError(f"no fake response for {url}")
         response = requests.Response()
@@ -218,8 +218,26 @@ def test_get_event_urls_none_when_no_events_sitemap_identified(monkeypatch):
     ) is None
 
 
+def test_get_event_urls_none_when_disallowed_by_robots(monkeypatch, capsys):
+    # A robots.txt-advertised sitemap is usually fine to fetch (that's how it got
+    # advertised), but not guaranteed - _fetch_xml must still check, and must not
+    # touch the network for the sitemap itself when it doesn't.
+    monkeypatch.setattr(sitemap_crawler.robots, "is_allowed", lambda url: False)
+    monkeypatch.setattr(
+        sitemap_crawler.requests, "get",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not fetch a robots-disallowed sitemap")),
+    )
+
+    assert sitemap_crawler.get_event_urls(
+        "https://example.com/sitemap.xml", "https://example.com/",
+    ) is None
+    # Same grep-able marker as event_crawler.py/listing_crawler.py's own skips -
+    # otherwise this reads just like any other "failed to fetch" in the log.
+    assert "ROBOTS-SKIP: https://example.com/sitemap.xml (sitemap)" in capsys.readouterr().out
+
+
 def test_get_event_urls_none_on_fetch_failure(monkeypatch):
-    def raise_connection_error(url, timeout=None):
+    def raise_connection_error(url, headers=None, timeout=None):
         raise requests.ConnectionError("boom")
 
     monkeypatch.setattr(sitemap_crawler.requests, "get", raise_connection_error)
@@ -241,7 +259,7 @@ def test_get_event_urls_gzip_compressed_sitemap_is_decompressed(monkeypatch):
     # Confirmed in practice (jurassiccoast10k.co.uk/sitemap.xml.gz): served as raw
     # gzip bytes with no Content-Encoding: gzip header, so requests/urllib3 never
     # auto-decompresses it - response.content really is still gzip-compressed here.
-    def fake_get(url, timeout=None):
+    def fake_get(url, headers=None, timeout=None):
         assert url == "https://jurassiccoast10k.co.uk/sitemap.xml.gz"
         response = requests.Response()
         response.status_code = 200

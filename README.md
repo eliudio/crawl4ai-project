@@ -1,5 +1,21 @@
 ﻿# TODOs
 
+## Local AI
+
+Tree Forts Challene
+There are clearly distances in the url 	https://www.threefortschallenge.org.uk/e/three-forts-challenge-8513
+Yet, the crawl / AI interpreted page doesn't include this
+It's probably because somehow to markdown conversion didn't go as it should
+See Page content
+
+Create a unit test for this HTML, and test with local AI
+
+## Local AI
+
+Is there a local AI available which could replace the grok / anthropic AI?
+
+## Weekly runs and club runs which might not be all that clear to scrape, like parkrun.co.uk
+
 ## summary and reword
 
 1) it seems the summary can have funny characters like &#39; instead of - I guess - '. Why?
@@ -109,7 +125,7 @@ prototype code elsewhere in `src/`:
 #### setup locally
 
 1. Download, install and run docker desktop
-2. Install Firecrawl: (self hosting not used). TO BE DELETED
+2. Install Firecrawl: (self hosting not used). 
 ```
 C:\src
 mkdir firecrawl2 
@@ -135,7 +151,7 @@ Provide values for
 #### run locally
 
 1. Start docker desktop on your laptop
-2. Run firecrawl (self hosting not used). TO BE DELETED
+2. Run firecrawl (self hosting not used). 
 ```
 cd C:\src\firecrawl2\firecrawl
 docker-compose up
