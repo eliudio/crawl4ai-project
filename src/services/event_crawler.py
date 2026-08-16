@@ -14,7 +14,7 @@ import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from services import llm_extractor, robots, scraper_client
+from services import llm_extractor, robots, scraper_client, structured_data
 from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event, EventDistance, EventStatus
 from services.race_types import get_or_create_race_type
 
@@ -60,7 +60,10 @@ def crawl_event(
         return existing
 
     try:
-        markdown, _links, _html, _url = scraper_client.scrape(event_url, want_links=False)
+        # want_html=True even though this is otherwise a markdown-only fetch - needed for
+        # structured_data.extract_event_fields to read the page's own schema.org JSON-LD
+        # (see below), which markdown conversion strips out along with every other <script>.
+        markdown, _links, html, _url = scraper_client.scrape(event_url, want_links=False, want_html=True)
         content_hash = _hash(markdown)
 
         if check_mode == "hash-check" and existing and existing.content_hash == content_hash:
@@ -72,7 +75,15 @@ def crawl_event(
             session.add(run)
             return existing
 
-        fields = llm_extractor.extract_event_fields(event_url, markdown)
+        # Deterministic and free - read whatever this page's own schema.org JSON-LD already
+        # states (see structured_data.py) before ever calling the LLM, so it's only asked to
+        # fill in whatever wasn't already there (llm_extractor.extract_event_fields removes
+        # these keys from its own schema/required list entirely, not just offered as a hint).
+        known_fields = structured_data.extract_event_fields(html)
+        if known_fields:
+            print(f"{datetime.now():%H:%M:%S} - structured data (JSON-LD) supplied: {sorted(known_fields)}")
+
+        fields = llm_extractor.extract_event_fields(event_url, markdown, known_fields=known_fields)
         if fields is None:
             run.detail = "extraction returned no fields"
             run.finished_at = datetime.now(timezone.utc)
@@ -131,6 +142,14 @@ def crawl_event(
     except requests.exceptions.ConnectionError:
         raise  # can't reach Firecrawl at all - stop the run rather than retrying every remaining URL
     except Exception as e:
+        # Anything that failed here (e.g. a DB constraint/length error surfacing via
+        # autoflush of the pending `event` while querying, such as
+        # get_or_create_race_type) leaves the session's transaction unusable until
+        # it's rolled back - without this, the *next* statement on this session (even
+        # session_scope's own closing commit) raises PendingRollbackError instead of
+        # the original error, which looks like an unrelated crash and takes the whole
+        # batch run down with it instead of just this one event.
+        session.rollback()
         run.detail = f"{type(e).__name__}: {e}"
         run.finished_at = datetime.now(timezone.utc)
         session.add(run)

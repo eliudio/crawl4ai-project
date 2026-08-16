@@ -143,7 +143,10 @@ class Event(Base):
     location: Mapped[str | None] = mapped_column(String(512), nullable=True)
     start_location: Mapped[str | None] = mapped_column(String(512), nullable=True)
     finish_location: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    age_restriction_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Text, not String(N) - unlike location/name, this is a free-form rule/paragraph
+    # straight from the LLM with no realistic length assumption (e.g. Frimley Health
+    # Charity's "Run Frimley 2022" page has a 3-clause, 270+ char version of this).
+    age_restriction_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # See EventStatus - defaults to VALID since most crawled URLs really are events;
     # event_crawler.py sets this from the LLM's own is_valid_event/invalid_reason

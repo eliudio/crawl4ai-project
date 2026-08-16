@@ -397,24 +397,46 @@ def _run_llm(
     return _call_grok(system_prompt, user_prompt, max_tokens)
 
 
-def extract_event_fields(url: str, markdown: str) -> dict[str, Any] | None:
-    """Extract structured event fields from an event detail page's markdown."""
+def extract_event_fields(
+    url: str, markdown: str, known_fields: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """
+    Extract structured event fields from an event detail page's markdown.
+
+    known_fields (see structured_data.py): whatever was already read straight out of the
+    page's own schema.org JSON-LD, if present - deterministic and free. Those keys are
+    removed from the schema/required list sent to the LLM entirely (not merely offered as
+    a hint) so it's never even asked to re-derive them, only whatever's still missing.
+    distances/is_valid_event/invalid_reason never come from JSON-LD (schema.org's Event
+    vocabulary has no equivalent for any of those), so those three are always asked
+    regardless of what known_fields contains.
+    """
     print(f"{datetime.now():%H:%M:%S} - extract_event_fields ({settings.llm_provider}): {url}")
     if not markdown.strip():
         return None
 
-    user_prompt = _build_user_prompt(
-        f"Extract from this page content:\n\n{markdown}", _EVENT_SCHEMA_PROPERTIES, _EVENT_REQUIRED
-    )
+    known_fields = known_fields or {}
+    schema_properties = {k: v for k, v in _EVENT_SCHEMA_PROPERTIES.items() if k not in known_fields}
+    required = [k for k in _EVENT_REQUIRED if k not in known_fields]
+
+    instructions = f"Extract from this page content:\n\n{markdown}"
+    if known_fields:
+        instructions += (
+            "\n\nAlready read directly from this page's own structured data (schema.org "
+            "JSON-LD) - treat these as correct, don't re-derive or contradict them, just "
+            "fill in everything else:\n" + json.dumps(known_fields, indent=2)
+        )
+
+    user_prompt = _build_user_prompt(instructions, schema_properties, required)
     try:
-        fields = _run_llm(_EVENT_SYSTEM_PROMPT, user_prompt, _EVENT_SCHEMA_PROPERTIES, _EVENT_REQUIRED, "extract_event")
+        fields = _run_llm(_EVENT_SYSTEM_PROMPT, user_prompt, schema_properties, required, "extract_event")
     except Exception as e:
         print(f"{datetime.now():%H:%M:%S} - extraction failed for {url}: {type(e).__name__}: {e}")
         return None
 
     result = {
         key: fields.get(key)
-        for key in _EVENT_SCHEMA_PROPERTIES
+        for key in schema_properties
         if key not in ("distances", "is_valid_event", "invalid_reason")
     }
     result["distances"] = _normalize_distances(fields.get("distances"))
@@ -424,6 +446,8 @@ def extract_event_fields(url: str, markdown: str) -> dict[str, Any] | None:
     result["is_valid_event"] = is_valid_event if isinstance(is_valid_event, bool) else True
     invalid_reason = fields.get("invalid_reason")
     result["invalid_reason"] = str(invalid_reason).strip() if (not result["is_valid_event"] and invalid_reason) else None
+
+    result.update(known_fields)  # structured-data fields win outright, never overwritten by the LLM
     return result
 
 

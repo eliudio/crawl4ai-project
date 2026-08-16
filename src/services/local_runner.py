@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 
+import requests
 from sqlalchemy import select
 
 from services import event_crawler, listing_crawler
@@ -55,9 +56,19 @@ def run(
             if dry_run:
                 print(f"  [dry-run] {url}")
                 continue
-            with session_scope() as session:
-                event = event_crawler.crawl_event(session, organiser.id, url, check_mode=check_mode)
-                print(f"  {'ok' if event else 'FAILED'}: {url}")
+            try:
+                with session_scope() as session:
+                    event = event_crawler.crawl_event(session, organiser.id, url, check_mode=check_mode)
+                    print(f"  {'ok' if event else 'FAILED'}: {url}")
+            except requests.exceptions.ConnectionError:
+                raise  # can't reach Firecrawl at all - stop the run, see crawl_event
+            except Exception as e:
+                # Belt-and-braces on top of crawl_event's own rollback/except: whatever
+                # slips through here (including session_scope's closing commit itself
+                # failing) should cost this one event, not the rest of the overnight
+                # run - see the run-frimley-2022 StringDataRightTruncation incident,
+                # where an uncontained error here killed everything after it.
+                print(f"  ERROR: {url}: {type(e).__name__}: {e}")
 
 
 if __name__ == "__main__":
