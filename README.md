@@ -244,11 +244,11 @@ Which platform(s) will be best? What will run where?
 
 Initially:
 1. Scrape events from as many organisers as possible. Server side. 24x7 scraping. Don't copy aggregators, only organisers. Respect robots.txt
-1. Race db. Find a race
-2. Indicate races you've done, with time, ... Upload photos, ... Link to Strava / Garmin
-3. Community of people
-4. Map overview, with races, flags where you've ran, where other's ran, ...
-
+2. Scrape aggregators to find organisers. But ONLY use it as a source of organiser names or domain names of organisers
+Race db. Find a race
+3. Indicate races you've done, with time, ... Upload photos, ... Link to Strava / Garmin
+4Community of people
+5Map overview, with races, flags where you've ran, where other's ran, ...
 
 Then:
 1. A booking system, like Booking.com for races.
@@ -257,7 +257,6 @@ Then:
    * members can book to join
    * some races are only references
 2. Stripe pay direct to the customer
-8. Potentially request organizers if ok
 
 # To consider event sources:
 * runningcalendar.co.uk
