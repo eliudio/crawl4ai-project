@@ -9,6 +9,10 @@ Usage:
     python -m services.local_runner --mode dry-run  # discover event URLs but don't crawl/store them, just print
     python -m services.local_runner --mode sanity-check  # crawl only 1 event per organiser - a quick smoke test across all of them
     python -m services.local_runner --check-mode url-check  # skip re-crawl of any URL already stored, changed or not
+    python -m services.local_runner --organiser-id 42 --force-refresh  # re-crawl every event for organiser
+                                                                        # 42, replacing existing rows, adding
+                                                                        # missing ones - e.g. after fixing a bug
+                                                                        # in extraction that needs a full redo
 """
 
 import argparse
@@ -29,6 +33,7 @@ def run(
     mode: str = "normal",
     check_mode: str = "hash-check",
     scraper_backend: str | None = None,
+    force_refresh: bool = False,
 ) -> None:
     """
     mode "normal" (default): crawl every new event URL found for each organiser.
@@ -39,12 +44,27 @@ def run(
     crawl/extraction/store) for every organiser without paying to crawl every
     single one of its events. The opposite trade-off from --limit: fewer events
     per organiser instead of fewer organisers.
+
+    force_refresh: re-crawl every event URL currently found for each organiser
+    (not just ones missing from the database) and always re-extract, even if a
+    URL is already stored and its content hasn't changed - replacing that row
+    in place, same as a normal re-extraction would, rather than skipping it.
+    A URL with no existing row is still added as new. For picking up a fix to
+    the extraction pipeline itself across events that were already crawled
+    (see e.g. the Three Forts Challenge distance-stripping bug) - the point is
+    to force every one of them through extraction again, not wait for their
+    content to change. Overrides check_mode entirely (always uses "force"
+    internally, see event_crawler.crawl_event) - normally combined with
+    --organiser-id, since refreshing every organiser at once re-runs the LLM
+    over every event in the database.
     """
     # See services/scraper_client.py: "crawl4ai" (self-hosted, no per-page cost) is the
     # default; "firecrawl" always uses Firecrawl's hosted API instead. None leaves
     # whatever's already configured via SCRAPER_BACKEND/.env untouched.
     if scraper_backend is not None:
         settings.scraper_backend = scraper_backend
+
+    effective_check_mode = "force" if force_refresh else check_mode
 
     init_db()
     seed_from_csv()
@@ -60,24 +80,25 @@ def run(
     for organiser in organisers:
         with session_scope() as session:
             organiser = session.get(Organiser, organiser.id)
-            new_urls = listing_crawler.crawl_listing(session, organiser)
-            print(f"{organiser.name}: {len(new_urls)} new event URL(s)")
+            urls = listing_crawler.crawl_listing(session, organiser, force=force_refresh)
+            label = "event URL(s) to refresh" if force_refresh else "new event URL(s)"
+            print(f"{organiser.name}: {len(urls)} {label}")
 
         if mode == "dry-run":
-            for url in new_urls:
+            for url in urls:
                 print(f"  [dry-run] {url}")
             continue
 
-        urls_to_crawl = new_urls
+        urls_to_crawl = urls
         if mode == "sanity-check":
-            urls_to_crawl = new_urls[:1]
-            if len(new_urls) > 1:
-                print(f"  [sanity-check] crawling 1 of {len(new_urls)} new event URL(s)")
+            urls_to_crawl = urls[:1]
+            if len(urls) > 1:
+                print(f"  [sanity-check] crawling 1 of {len(urls)} event URL(s)")
 
         for url in urls_to_crawl:
             try:
                 with session_scope() as session:
-                    event = event_crawler.crawl_event(session, organiser.id, url, check_mode=check_mode)
+                    event = event_crawler.crawl_event(session, organiser.id, url, check_mode=effective_check_mode)
                     print(f"  {'ok' if event else 'FAILED'}: {url}")
             except requests.exceptions.ConnectionError:
                 raise  # can't reach Firecrawl at all - stop the run, see crawl_event
@@ -117,6 +138,14 @@ if __name__ == "__main__":
         help="crawl4ai (default): self-hosted, no per-page cost, falls back to Firecrawl "
         "automatically on failure. firecrawl: always use Firecrawl's hosted API.",
     )
+    parser.add_argument(
+        "--force-refresh",
+        action="store_true",
+        help="re-crawl every event URL for each organiser, not just new ones, and always "
+        "re-extract even if content is unchanged - replaces existing rows, adds missing "
+        "ones. Overrides --check-mode. Normally combined with --organiser-id, e.g. "
+        "--organiser-id 42 --force-refresh.",
+    )
     args = parser.parse_args()
     run(
         limit=args.limit,
@@ -124,4 +153,5 @@ if __name__ == "__main__":
         mode=args.mode,
         check_mode=args.check_mode,
         scraper_backend=args.scraper_backend,
+        force_refresh=args.force_refresh,
     )

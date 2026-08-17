@@ -1,32 +1,17 @@
 ﻿# TODOs
 
-## add ID to the events per organiser html page
-
-## can I run a specific organiser with it's id? How can I force to refresh the contents, because I believe 
-  the resu
-
-## Wrong AI interpretation / html to markdown conversion
-
-Tree Forts Challene
-There are clearly distances in the url 	https://www.threefortschallenge.org.uk/e/three-forts-challenge-8513
-Yet, the crawl / AI interpreted page doesn't include this
-It's probably because somehow to markdown conversion didn't go as it should
-See Page content: the headers are not in line with the html, doesn't include the distance and hence the AI doesn't see
-What's wrong with the HTML -> MD
-
-Also: Create a unit test for this specific case, maybe even to test it with failure, fix it, retest it
-
-## Local AI
-
-Is there a local AI available which could replace the grok / anthropic AI?
-
-## Weekly runs and club runs which might not be all that clear to scrape, like parkrun.co.uk
+## Include the weekly events / runs and club runs which might not be all that clear to scrape, like parkrun.co.uk
 
 ## summary and reword
 
-1) it seems the summary can have funny characters like &#39; instead of - I guess - '. Why?
-2) ask AI to generate alternative wording for the current summary, so that we don't suffer copyright issues
-2) ask AI to generate a summary of the current summary
+1) it seems the summary can have funny characters like &#39; instead of - I guess - '. Why? Fix it
+2) ask AI to generate alternative wording for the current summary, so that we don't suffer potential copyright issues.
+3) ask AI to generate a summary of the current summary
+
+So we want: 
+- original summary (as it is now),
+- alternative summary (described in 2)
+- summary of summary (described in 3)
 
 ## Move the project to rompje.com
 

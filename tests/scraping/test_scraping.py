@@ -320,6 +320,89 @@ def test_crawl_one_listing_url_respects_robots_disallow_and_logs_it(monkeypatch,
 
 
 # ---------------------------------------------------------------------------
+# force=True: local_runner.py's --force-refresh needs every confirmed event
+# URL back, not just ones missing from the database - see event_crawler.py's
+# check_mode="force", which then re-extracts and replaces each one in place.
+# ---------------------------------------------------------------------------
+
+class _FakeScalarResult:
+    def __init__(self, items):
+        self._items = items
+
+    def all(self):
+        return self._items
+
+
+class _FakeExistingUrlsSession:
+    """.scalars() returns whichever URLs the test configures as 'already stored',
+    regardless of the actual query object passed in; .add() (every CrawlRun audit
+    row _crawl_one_listing_url records, success or failure) is just discarded -
+    no real DB needed for either."""
+
+    def __init__(self, existing_urls):
+        self._existing_urls = existing_urls
+
+    def scalars(self, query):
+        return _FakeScalarResult(self._existing_urls)
+
+    def add(self, obj):
+        pass
+
+
+def _stub_two_confirmed_events(monkeypatch):
+    monkeypatch.setattr(listing_crawler.robots, "is_allowed", lambda url: True)
+    monkeypatch.setattr(
+        listing_crawler, "_analyze_page",
+        lambda page_url, homepage_url: (
+            ["https://example.com/event/a", "https://example.com/event/b"], [], None,
+        ),
+    )
+
+
+def test_crawl_one_listing_url_excludes_existing_urls_by_default(monkeypatch):
+    organiser = Organiser(homepage_url="https://example.com/")
+    organiser.id = 1
+    session = _FakeExistingUrlsSession(["https://example.com/event/a"])
+    _stub_two_confirmed_events(monkeypatch)
+
+    new_urls = listing_crawler._crawl_one_listing_url(
+        session, organiser, "https://example.com/events", seen=set(),
+    )
+
+    assert new_urls == ["https://example.com/event/b"]
+
+
+def test_crawl_one_listing_url_force_returns_existing_urls_too(monkeypatch):
+    organiser = Organiser(homepage_url="https://example.com/")
+    organiser.id = 1
+    session = _FakeExistingUrlsSession(["https://example.com/event/a"])
+    _stub_two_confirmed_events(monkeypatch)
+
+    urls = listing_crawler._crawl_one_listing_url(
+        session, organiser, "https://example.com/events", seen=set(), force=True,
+    )
+
+    assert urls == ["https://example.com/event/a", "https://example.com/event/b"]
+
+
+def test_crawl_one_listing_url_force_still_respects_in_run_dedup(monkeypatch):
+    # force only bypasses the "already in the database" exclusion, not the
+    # within-this-run `seen` dedup (e.g. the same event linked from two
+    # different listing pages during one crawl_listing() call).
+    organiser = Organiser(homepage_url="https://example.com/")
+    organiser.id = 1
+    session = _FakeExistingUrlsSession([])
+    _stub_two_confirmed_events(monkeypatch)
+
+    urls = listing_crawler._crawl_one_listing_url(
+        session, organiser, "https://example.com/events",
+        seen={"https://example.com/event/a"}, force=True,
+    )
+
+    assert urls == ["https://example.com/event/b"]
+
+
+# ---------------------------------------------------------------------------
 # _find_click_selector / _resolve_click_selector: the real bug that broke
 # runthrough.co.uk twice - an LLM-guessed selector either matched dozens of
 # unrelated buttons sharing the same generic class, or an attribute that

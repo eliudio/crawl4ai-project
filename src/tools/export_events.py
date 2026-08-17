@@ -76,6 +76,7 @@ CSV_FIELDNAMES = [
 # Status is rendered separately too (see _render_event's INVALID badge) rather than
 # appearing as a plain row here.
 DETAIL_FIELDS = [
+    ("Organiser ID", "organiser_id"),
     ("Sport", "sport"),
     ("Date", "date_text"),
     ("Location", "location"),
@@ -259,12 +260,12 @@ def _render_event(event: Event, organiser_name: str | None = None) -> str:
         </details>"""
 
 
-def _render_organiser(organiser_name: str, events: list[Event]) -> str:
+def _render_organiser(organiser_id: int, organiser_name: str, events: list[Event]) -> str:
     name = html.escape(organiser_name)
     events_html = "".join(_render_event(e) for e in events)
     return f"""
       <details class="organiser">
-        <summary>{name} <span class="count">({len(events)} event{"s" if len(events) != 1 else ""})</span></summary>
+        <summary>{name} <span class="org-id">(ID {organiser_id})</span> <span class="count">({len(events)} event{"s" if len(events) != 1 else ""})</span></summary>
         <div class="events">{events_html}</div>
       </details>"""
 
@@ -345,6 +346,7 @@ _CSS = """
     font-weight: 600;
   }
   .count { font-weight: 400; color: var(--muted); font-size: 0.9rem; }
+  .org-id { font-weight: 400; color: var(--muted); font-size: 0.85rem; }
   .events, .distances-by-sport {
     margin-top: 0.6rem;
     padding-left: 1.4rem;
@@ -524,7 +526,9 @@ def _export_organiser_tree(output_path: Path, organiser_id: int | None, status: 
 
     total = sum(len(g["events"]) for g in grouped.values())
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-    organisers_html = "".join(_render_organiser(g["name"], g["events"]) for g in grouped.values())
+    organisers_html = "".join(
+        _render_organiser(organiser_id, g["name"], g["events"]) for organiser_id, g in grouped.items()
+    )
 
     doc = f"""<!DOCTYPE html>
 <html lang="en">

@@ -30,6 +30,8 @@ def _hash(markdown: str) -> str:
 # of 404.
 _DEAD_LINK_STATUS_CODES = {404, 410}
 
+_CHECK_MODES = {"hash-check", "url-check", "force"}
+
 
 def _dead_link_status(url: str) -> int | None:
     """
@@ -66,7 +68,18 @@ def crawl_event(
     events, not just new ones.
     check_mode "url-check": skip entirely (no fetch) if the URL is already in
     the database, regardless of whether the page changed since.
+    check_mode "force": always fetch and always re-extract, even if the URL is
+    already stored and its content hasn't changed - neither the url-check nor
+    hash-check skip below ever applies. An existing row is updated in place
+    (same as a normal hash-check re-extraction), a URL with no existing row is
+    inserted as new - see local_runner.py's --force-refresh, for re-running a
+    whole organiser's events after a fix to the extraction pipeline itself,
+    where a stale content_hash match would otherwise skip every event that
+    still needs picking up the corrected fields.
     """
+    if check_mode not in _CHECK_MODES:
+        raise ValueError(f"unknown check_mode: {check_mode!r} (expected one of {sorted(_CHECK_MODES)})")
+
     now = datetime.now(timezone.utc)
     run = CrawlRun(
         run_type=CrawlRunType.EVENT,

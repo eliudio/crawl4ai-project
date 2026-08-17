@@ -420,13 +420,15 @@ def _analyze_page(page_url: str, homepage_url: str) -> tuple[list[str], list[str
 
 
 def _crawl_one_listing_url(
-    session: Session, organiser: Organiser, listing_url: str, seen: set[str]
+    session: Session, organiser: Organiser, listing_url: str, seen: set[str], force: bool = False
 ) -> list[str]:
     """
     Crawl one listing URL, following numbered pagination (a distinct
     next_page_url each time) up to _MAX_LISTING_PAGES. Each page visited gets
     its own CrawlRun audit row. Returns the new event URLs found across all
-    pages of this listing.
+    pages of this listing - or, when force=True, every confirmed event URL
+    regardless of whether it's already stored (still deduped against `seen`
+    within this run, just not against the database) - see crawl_listing.
     """
     new_urls: list[str] = []
     visited: set[str] = set()
@@ -459,7 +461,7 @@ def _crawl_one_listing_url(
         try:
             event_links, candidates, next_page_url = _analyze_page(page_url, organiser.homepage_url)
 
-            existing_urls = set(
+            existing_urls = set() if force else set(
                 session.scalars(select(Event.url).where(Event.url.in_(event_links))).all()
             )
             page_new = [u for u in event_links if u not in existing_urls and u not in seen]
@@ -467,7 +469,8 @@ def _crawl_one_listing_url(
             new_urls.extend(page_new)
 
             run.status = CrawlStatus.SUCCESS
-            run.detail = f"{len(candidates)} candidate links, {len(event_links)} confirmed events, {len(page_new)} new"
+            detail_suffix = f"{len(page_new)} to refresh (force)" if force else f"{len(page_new)} new"
+            run.detail = f"{len(candidates)} candidate links, {len(event_links)} confirmed events, {detail_suffix}"
             run.finished_at = datetime.now(timezone.utc)
             session.add(run)
 
@@ -483,7 +486,7 @@ def _crawl_one_listing_url(
     return new_urls
 
 
-def _crawl_from_sitemap(session: Session, organiser: Organiser) -> list[str] | None:
+def _crawl_from_sitemap(session: Session, organiser: Organiser, force: bool = False) -> list[str] | None:
     """
     Case 0 (preferred over everything else in this module): organiser.sitemap_url
     is a direct, complete list of the site's URLs read straight from a static
@@ -495,7 +498,9 @@ def _crawl_from_sitemap(session: Session, organiser: Organiser) -> list[str] | N
     Returns None (not []) when the sitemap couldn't be resolved into
     anything - crawl_listing falls back to the normal page-crawling
     mechanism below in that case, rather than treating a sitemap that
-    turned out to be unusable as "this organiser has zero events".
+    turned out to be unusable as "this organiser has zero events". force=True
+    returns every URL in the sitemap, not just ones missing from the database -
+    see crawl_listing.
     """
     event_urls = sitemap_crawler.get_event_urls(organiser.sitemap_url, organiser.homepage_url)
     if event_urls is None:
@@ -511,17 +516,24 @@ def _crawl_from_sitemap(session: Session, organiser: Organiser) -> list[str] | N
     )
     existing_urls = set(session.scalars(select(Event.url).where(Event.url.in_(event_urls))).all())
     new_urls = [u for u in event_urls if u not in existing_urls]
-    run.detail = f"{len(event_urls)} urls from sitemap, {len(new_urls)} new"
+    run.detail = f"{len(event_urls)} urls from sitemap, {len(new_urls)} new" + (
+        " (force refresh: returning all)" if force else ""
+    )
     run.finished_at = datetime.now(timezone.utc)
     session.add(run)
-    return new_urls
+    return event_urls if force else new_urls
 
 
-def crawl_listing(session: Session, organiser: Organiser) -> list[str]:
+def crawl_listing(session: Session, organiser: Organiser, force: bool = False) -> list[str]:
     """
     Crawl one organiser's listing page(s). Returns the event URLs that are
     new (not already stored) so the caller can decide how to hand them off
-    (Pub/Sub in production, direct in-process call for local runs).
+    (Pub/Sub in production, direct in-process call for local runs) - or, when
+    force=True, every event URL currently found for this organiser regardless
+    of whether it's already stored, for a manual full refresh (see
+    local_runner.py's --force-refresh): the caller is expected to re-crawl
+    each one with event_crawler.crawl_event(check_mode="force") so an
+    already-stored URL gets replaced in place rather than skipped.
 
     Prefers reading organiser.sitemap_url (see _crawl_from_sitemap) over
     everything below it when one is known - only falls through to
@@ -529,7 +541,7 @@ def crawl_listing(session: Session, organiser: Organiser) -> list[str]:
     couldn't be resolved into anything.
     """
     if organiser.sitemap_url:
-        event_urls = _crawl_from_sitemap(session, organiser)
+        event_urls = _crawl_from_sitemap(session, organiser, force=force)
         if event_urls is not None:
             return event_urls
 
@@ -543,6 +555,6 @@ def crawl_listing(session: Session, organiser: Organiser) -> list[str]:
     seen: set[str] = set()
 
     for listing_url in listing_urls:
-        new_urls.extend(_crawl_one_listing_url(session, organiser, listing_url, seen))
+        new_urls.extend(_crawl_one_listing_url(session, organiser, listing_url, seen, force=force))
 
     return new_urls

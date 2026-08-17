@@ -172,6 +172,110 @@ def test_non_dead_status_code_falls_through_to_normal_scrape(monkeypatch, sessio
 
 
 # ---------------------------------------------------------------------------
+# check_mode="force" - re-crawl and always re-extract, even when the content
+# hasn't changed, replacing the existing row in place. See local_runner.py's
+# --force-refresh: the reported case is re-running the Three Forts Challenge
+# organiser after fixing a bug in extraction, where every already-crawled
+# event's content_hash still matches (the live page didn't change, the code
+# that reads it did) - hash-check's normal "unchanged, skip" shortcut would
+# otherwise never let the fix take effect until the page itself changes.
+# ---------------------------------------------------------------------------
+
+def test_unknown_check_mode_raises(session):
+    with pytest.raises(ValueError, match="unknown check_mode"):
+        event_crawler.crawl_event(
+            session, organiser_id=1, event_url="https://example.org/event/x", check_mode="bogus"
+        )
+
+
+def test_hash_check_skips_reextraction_when_content_unchanged(monkeypatch, session):
+    # Baseline this is contrasted with below: hash-check's whole point is to skip
+    # the LLM call when the page's content hasn't changed since last time.
+    existing = Event(
+        organiser_id=1, url="https://example.org/event/x", name="Old Name",
+        content_hash=event_crawler._hash("markdown"),
+    )
+    session.add(existing)
+    session.commit()
+
+    extract_calls = []
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: extract_calls.append(1) or {"name": "New Name", "distances": []},
+    )
+
+    event = event_crawler.crawl_event(
+        session, organiser_id=1, event_url="https://example.org/event/x", check_mode="hash-check"
+    )
+
+    assert extract_calls == []
+    assert event.name == "Old Name"
+
+
+def test_force_reextracts_and_replaces_even_when_hash_unchanged(monkeypatch, session):
+    # Same matching content_hash as the hash-check test above - force must not skip.
+    existing = Event(
+        organiser_id=1, url="https://example.org/event/x", name="Old Name",
+        content_hash=event_crawler._hash("markdown"),
+    )
+    session.add(existing)
+    session.commit()
+
+    extract_calls = []
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: extract_calls.append(1) or {"name": "New Name", "distances": []},
+    )
+
+    event = event_crawler.crawl_event(
+        session, organiser_id=1, event_url="https://example.org/event/x", check_mode="force"
+    )
+
+    assert len(extract_calls) == 1
+    assert event.id == existing.id  # replaced in place, not a duplicate row
+    assert event.name == "New Name"
+    assert session.query(Event).count() == 1
+
+
+def test_force_adds_new_event_when_none_exists(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {"name": "Brand New", "distances": []},
+    )
+
+    event = event_crawler.crawl_event(
+        session, organiser_id=1, event_url="https://example.org/event/new", check_mode="force"
+    )
+
+    assert event is not None
+    assert event.name == "Brand New"
+    assert session.query(Event).count() == 1
+
+
+def test_force_ignores_url_check_style_skip(monkeypatch, session):
+    # force must fetch and re-extract even though the URL already exists - the
+    # thing url-check would normally skip on outright.
+    existing = Event(organiser_id=1, url="https://example.org/event/x", name="Old Name")
+    session.add(existing)
+    session.commit()
+
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {"name": "New Name", "distances": []},
+    )
+
+    event = event_crawler.crawl_event(
+        session, organiser_id=1, event_url="https://example.org/event/x", check_mode="force"
+    )
+
+    assert event.name == "New Name"
+
+
+# ---------------------------------------------------------------------------
 # robots.txt skip must be clearly logged - crawl_event returning None here
 # looks identical, from local_runner.py's/main.py's own "ok"/"FAILED" print,
 # to a genuine scrape/extraction failure. The ROBOTS-SKIP marker is what makes

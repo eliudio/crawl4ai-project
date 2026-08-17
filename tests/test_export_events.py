@@ -149,14 +149,27 @@ def test_render_event_untitled_fallback():
 
 
 def test_render_event_omits_organiser_row_by_default():
-    event = Event(id=1, name="Test Event", sport="running", date_text=None, distances=[], raw_markdown=None)
-    assert "Organiser" not in export_events._render_event(event)
+    # organiser_name not given (e.g. _render_organiser's per-organiser tree, where the
+    # name is already the enclosing group) - the *name* row shouldn't render, but the
+    # organiser_id row (see below) is unconditional, so check the exact <th> not a bare
+    # "Organiser" substring - that would also match "Organiser ID".
+    event = Event(id=1, organiser_id=1, name="Test Event", sport="running", date_text=None, distances=[], raw_markdown=None)
+    assert "<th>Organiser</th>" not in export_events._render_event(event)
 
 
 def test_render_event_includes_organiser_row_when_given():
-    event = Event(id=1, name="Test Event", sport="running", date_text=None, distances=[], raw_markdown=None)
+    event = Event(id=1, organiser_id=1, name="Test Event", sport="running", date_text=None, distances=[], raw_markdown=None)
     rendered = export_events._render_event(event, organiser_name="Acme Runners")
     assert "<th>Organiser</th><td>Acme Runners</td>" in rendered
+
+
+def test_render_event_always_shows_organiser_id():
+    # Unlike the organiser *name* row, organiser_id is always shown - it's the one
+    # identifier that's stable and correlates a rendered event back to a --organiser-id
+    # filter or a DB row, regardless of which export (or grouping) is rendering it.
+    event = Event(id=1, organiser_id=42, name="Test Event", sport="running", date_text=None, distances=[], raw_markdown=None)
+    rendered = export_events._render_event(event)
+    assert "<th>Organiser ID</th><td>42</td>" in rendered
 
 
 def test_render_event_includes_url_link_when_present():
@@ -196,7 +209,7 @@ def test_render_event_invalid_with_no_reason_shows_placeholder():
 
 def test_render_organiser_singular_count():
     event = Event(id=1, name="Solo Event", sport=None, date_text=None, distances=[], raw_markdown=None)
-    rendered = export_events._render_organiser("Acme Runners", [event])
+    rendered = export_events._render_organiser(1, "Acme Runners", [event])
     assert "(1 event)" in rendered
     assert "Solo Event" in rendered
 
@@ -206,8 +219,14 @@ def test_render_organiser_plural_count():
         Event(id=1, name="Event A", sport=None, date_text=None, distances=[], raw_markdown=None),
         Event(id=2, name="Event B", sport=None, date_text=None, distances=[], raw_markdown=None),
     ]
-    rendered = export_events._render_organiser("Acme Runners", events)
+    rendered = export_events._render_organiser(1, "Acme Runners", events)
     assert "(2 events)" in rendered
+
+
+def test_render_organiser_header_shows_organiser_id():
+    event = Event(id=1, name="Solo Event", sport=None, date_text=None, distances=[], raw_markdown=None)
+    rendered = export_events._render_organiser(7, "Acme Runners", [event])
+    assert '<span class="org-id">(ID 7)</span>' in rendered
 
 
 def test_render_sport_counts_events_and_distances_across_groups():
@@ -422,6 +441,12 @@ def test_export_events_per_organiser_groups_by_organiser(tmp_path):
     assert "Beta Triathlon" in html_text
     assert "(2 events)" in html_text  # Acme Runners' count
     assert "(1 event)" in html_text  # Beta Multisport's count
+    # organiser_id (see sample_rows: event1/event2 -> organiser 1, event3 -> organiser 2)
+    # threaded through from the grouped dict's key, not just each event's own row.
+    assert '<span class="org-id">(ID 1)</span>' in html_text
+    assert '<span class="org-id">(ID 2)</span> <span class="count">(1 event)</span>' in html_text
+    assert "<th>Organiser ID</th><td>1</td>" in html_text
+    assert "<th>Organiser ID</th><td>2</td>" in html_text
 
 
 def test_export_events_per_event_type_groups_by_sport_and_distance(tmp_path):
