@@ -2,17 +2,6 @@
 
 ## Include the weekly events / runs and club runs which might not be all that clear to scrape, like parkrun.co.uk
 
-## summary and reword
-
-1) it seems the summary can have funny characters like &#39; instead of - I guess - '. Why? Fix it
-2) ask AI to generate alternative wording for the current summary, so that we don't suffer potential copyright issues.
-3) ask AI to generate a summary of the current summary
-
-So we want: 
-- original summary (as it is now),
-- alternative summary (described in 2)
-- summary of summary (described in 3)
-
 ## Move the project to rompje.com
 
 ## Change the name of the project to eyeonrace.com ?

@@ -130,3 +130,31 @@ def test_location_omitted_when_not_a_dict():
     data = {"@type": "SportsEvent", "name": "X", "location": "Somewhere"}
     fields = structured_data.extract_event_fields(_html_with_ld_json(data))
     assert "location" not in fields
+
+
+# ---------------------------------------------------------------------------
+# HTML entities in JSON-LD text fields: the reported bug, confirmed against
+# threefortschallenge.org.uk - its own JSON-LD generator HTML-escapes name/
+# description before embedding them as JSON string literals (even though JSON
+# itself needs no such escaping), so json.loads() alone leaves the raw entity
+# sitting in the text (e.g. "runner&#39;s" instead of "runner's").
+# ---------------------------------------------------------------------------
+
+def test_description_entities_are_unescaped_into_summary():
+    data = {"@type": "SportsEvent", "name": "X", "description": "Join the runner&#39;s challenge &amp; have fun."}
+    fields = structured_data.extract_event_fields(_html_with_ld_json(data))
+    assert fields["summary"] == "Join the runner's challenge & have fun."
+    assert "&#39;" not in fields["summary"]
+    assert "&amp;" not in fields["summary"]
+
+
+def test_name_entities_are_unescaped():
+    data = {"@type": "SportsEvent", "name": "Bob&#39;s 10k &amp; Fun Run"}
+    fields = structured_data.extract_event_fields(_html_with_ld_json(data))
+    assert fields["name"] == "Bob's 10k & Fun Run"
+
+
+def test_location_entities_are_unescaped():
+    data = {"@type": "SportsEvent", "name": "X", "location": {"name": "St Mary&#39;s Field", "address": "Main St"}}
+    fields = structured_data.extract_event_fields(_html_with_ld_json(data))
+    assert fields["location"] == "St Mary's Field, Main St"

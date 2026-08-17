@@ -50,6 +50,13 @@ def _stub_pipeline(monkeypatch):
         lambda url, want_links=False, want_html=False: ("markdown", [], "<html></html>", url),
     )
     monkeypatch.setattr(event_crawler.structured_data, "extract_event_fields", lambda html: {})
+    # crawl_event calls this unconditionally once `summary` is set (see rewrite_summary's
+    # own empty-input short-circuit for when it isn't) - stubbed here so a test whose fields
+    # fixture happens to set "summary" doesn't make a real, unmocked LLM call underneath it.
+    monkeypatch.setattr(
+        event_crawler.llm_extractor, "rewrite_summary",
+        lambda summary: {"summary_alt": None, "summary_short": None},
+    )
 
 
 def test_exception_during_build_rolls_back_session(monkeypatch, session):
@@ -253,6 +260,50 @@ def test_force_adds_new_event_when_none_exists(monkeypatch, session):
     assert event is not None
     assert event.name == "Brand New"
     assert session.query(Event).count() == 1
+
+
+def test_summary_rewrite_populates_alt_and_short_when_summary_present(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Real Event", "sport": "running", "distances": [],
+            "summary": "A scenic 10k along the coast.",
+        },
+    )
+    captured = {}
+
+    def fake_rewrite_summary(summary):
+        captured["summary"] = summary
+        return {"summary_alt": "Reworded coastal 10k.", "summary_short": "Coastal 10k."}
+
+    monkeypatch.setattr(event_crawler.llm_extractor, "rewrite_summary", fake_rewrite_summary)
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/real")
+
+    assert captured["summary"] == "A scenic 10k along the coast."
+    assert event.summary == "A scenic 10k along the coast."
+    assert event.summary_alt == "Reworded coastal 10k."
+    assert event.summary_short == "Coastal 10k."
+
+
+def test_summary_rewrite_skipped_when_no_summary(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {"name": "Real Event", "sport": "running", "distances": []},
+    )
+
+    def should_not_be_called(summary):
+        raise AssertionError("should not call rewrite_summary with no summary to rewrite")
+
+    monkeypatch.setattr(event_crawler.llm_extractor, "rewrite_summary", should_not_be_called)
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/real")
+
+    assert event.summary is None
+    assert event.summary_alt is None
+    assert event.summary_short is None
 
 
 def test_force_ignores_url_check_style_skip(monkeypatch, session):

@@ -99,3 +99,49 @@ def test_extraction_failure_returns_none(monkeypatch):
     monkeypatch.setattr(llm_extractor, "_run_llm", failing_run_llm)
 
     assert llm_extractor.extract_event_fields("https://example.com/event", "some markdown") is None
+
+
+# ---------------------------------------------------------------------------
+# rewrite_summary - AI-generated alternative wording + a condensed summary of
+# the summary, so a stored `summary` (see structured_data.py, which can pull
+# it verbatim from a page's own JSON-LD description) doesn't have to be
+# republished as another site's own copy.
+# ---------------------------------------------------------------------------
+
+def test_rewrite_summary_returns_alt_and_short_from_llm(monkeypatch):
+    capture = {}
+    _patch_run_llm(
+        monkeypatch,
+        {"summary_alt": "A reworded version of the summary.", "summary_short": "Condensed."},
+        capture,
+    )
+
+    result = llm_extractor.rewrite_summary("A scenic 10k along the coast, open to all abilities.")
+
+    assert result == {"summary_alt": "A reworded version of the summary.", "summary_short": "Condensed."}
+    assert "A scenic 10k along the coast" in capture["user_prompt"]
+    assert capture["required"] == []
+
+
+def test_rewrite_summary_empty_input_skips_llm_call_entirely(monkeypatch):
+    def should_not_be_called(*args, **kwargs):
+        raise AssertionError("should not call the LLM for an empty summary")
+
+    monkeypatch.setattr(llm_extractor, "_run_llm", should_not_be_called)
+
+    assert llm_extractor.rewrite_summary("") == {"summary_alt": None, "summary_short": None}
+    assert llm_extractor.rewrite_summary("   ") == {"summary_alt": None, "summary_short": None}
+
+
+def test_rewrite_summary_failure_returns_none_values(monkeypatch):
+    def failing_run_llm(*args, **kwargs):
+        raise RuntimeError("LLM call failed")
+
+    monkeypatch.setattr(llm_extractor, "_run_llm", failing_run_llm)
+
+    assert llm_extractor.rewrite_summary("Some summary.") == {"summary_alt": None, "summary_short": None}
+
+
+def test_rewrite_summary_missing_keys_in_response_become_none(monkeypatch):
+    _patch_run_llm(monkeypatch, {})  # a malformed/partial response
+    assert llm_extractor.rewrite_summary("Some summary.") == {"summary_alt": None, "summary_short": None}

@@ -130,6 +130,38 @@ _EVENT_SYSTEM_PROMPT = (
     "must be flagged as invalid rather than mined for plausible-looking details."
 )
 
+_SUMMARY_REWRITE_SCHEMA_PROPERTIES: dict[str, Any] = {
+    "summary_alt": {
+        "type": ["string", "null"],
+        "description": (
+            "The summary below, reworded in genuinely different phrasing and sentence "
+            "structure while preserving the same facts - not a close paraphrase (a few "
+            "synonyms swapped in) and not the organiser's own wording. Exists so a stored "
+            "summary is never just another site's copy reproduced verbatim (see e.g. "
+            "structured_data.py, which can pull `summary` straight from a page's own "
+            "schema.org description). Null if the input summary is empty."
+        ),
+    },
+    "summary_short": {
+        "type": ["string", "null"],
+        "description": (
+            "A single condensed sentence summarising the summary below - the shortest "
+            "version that still captures what the event fundamentally is. Null if the "
+            "input summary is empty."
+        ),
+    },
+}
+_SUMMARY_REWRITE_REQUIRED: list[str] = []
+
+_SUMMARY_REWRITE_SYSTEM_PROMPT = (
+    "You are an editor rewriting a short sports event summary. Produce an alternative "
+    "version in genuinely original wording and sentence structure - not a close "
+    "paraphrase, and not the source's own phrasing - that preserves the same facts, "
+    "plus a further single-sentence condensed summary of it. Never invent facts that "
+    "aren't in the original summary given to you."
+)
+
+
 _LISTING_SCHEMA_PROPERTIES: dict[str, Any] = {
     "listing_urls": {
         "type": "array",
@@ -507,6 +539,43 @@ def _normalize_distances(raw: Any) -> list[dict[str, str | None]]:
             "distance_category": str(distance_category).strip().lower() if distance_category else None,
         })
     return distances
+
+
+def rewrite_summary(summary: str) -> dict[str, str | None]:
+    """
+    Given an event's own `summary` (see extract_event_fields - either LLM-rephrased
+    from the page's markdown, or read verbatim from the page's own schema.org JSON-LD
+    description, see structured_data.py), asks the LLM for two derived fields:
+
+    - summary_alt: an alternative version in genuinely original wording, not a close
+      paraphrase - reduces the risk of storing/republishing another site's own copy
+      verbatim (relevant since e.g. export_events.py's HTML export renders it straight
+      into a page other people view).
+    - summary_short: a further-condensed, single-sentence summary of that.
+
+    Returns {"summary_alt": None, "summary_short": None} without making any LLM call
+    if `summary` is empty/blank - there's nothing to rewrite or condense.
+    """
+    if not summary or not summary.strip():
+        return {"summary_alt": None, "summary_short": None}
+
+    print(f"{datetime.now():%H:%M:%S} - rewrite_summary ({settings.llm_provider})")
+    instructions = f"Original summary:\n{summary}"
+    user_prompt = _build_user_prompt(instructions, _SUMMARY_REWRITE_SCHEMA_PROPERTIES, _SUMMARY_REWRITE_REQUIRED)
+    try:
+        fields = _run_llm(
+            _SUMMARY_REWRITE_SYSTEM_PROMPT, user_prompt,
+            _SUMMARY_REWRITE_SCHEMA_PROPERTIES, _SUMMARY_REWRITE_REQUIRED,
+            "rewrite_summary", max_tokens=400,
+        )
+    except Exception as e:
+        print(f"{datetime.now():%H:%M:%S} - rewrite_summary failed: {type(e).__name__}: {e}")
+        return {"summary_alt": None, "summary_short": None}
+
+    return {
+        "summary_alt": fields.get("summary_alt") or None,
+        "summary_short": fields.get("summary_short") or None,
+    }
 
 
 def discover_listing_urls(homepage_url: str, markdown: str, candidate_links: list[str]) -> list[str]:

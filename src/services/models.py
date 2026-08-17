@@ -137,7 +137,16 @@ class Event(Base):
     url: Mapped[str] = mapped_column(String(1024))
 
     name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Original summary, as extracted - either LLM-rephrased from the page's own markdown,
+    # or (see structured_data.py) read verbatim from the page's own schema.org JSON-LD
+    # description when present.
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # AI-rewritten alternative wording of `summary` above (see llm_extractor.rewrite_summary) -
+    # genuinely reworded, not a close paraphrase, so what gets stored/republished (e.g.
+    # export_events.py's HTML export) never has to be another site's own copy verbatim.
+    summary_alt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # AI-condensed single-sentence summary of `summary` above (see llm_extractor.rewrite_summary).
+    summary_short: Mapped[str | None] = mapped_column(Text, nullable=True)
     sport: Mapped[str | None] = mapped_column(String(64), nullable=True)  # running, cycling, ...
     date_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
     location: Mapped[str | None] = mapped_column(String(512), nullable=True)

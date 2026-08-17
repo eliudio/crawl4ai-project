@@ -12,6 +12,7 @@ Event vocabulary has no equivalent for any of those).
 """
 
 import json
+from html import unescape
 from typing import Any
 
 from bs4 import BeautifulSoup
@@ -74,7 +75,7 @@ def _format_location(location: Any) -> str | None:
     elif isinstance(address, str):
         parts.append(address)
     text = ", ".join(str(p) for p in parts if p)
-    return text or None
+    return unescape(text) if text else None
 
 
 def _format_date(data: dict) -> str | None:
@@ -102,15 +103,23 @@ def extract_event_fields(html: str) -> dict[str, str]:
 
     fields: dict[str, str] = {}
 
+    # unescape(): plenty of sites' own JSON-LD generators HTML-escape their
+    # text (name/description) before embedding it as a JSON string literal, even
+    # though JSON needs no such escaping - confirmed in practice on
+    # threefortschallenge.org.uk, whose description came through as literal
+    # "...runner&#39;s..." rather than "...runner's...". json.loads() only
+    # unescapes JSON's own \" \\ \n etc. escapes, not HTML entities, so anything
+    # read out of JSON-LD text fields needs this decoded explicitly or the raw
+    # entity sits in event.summary/name/location verbatim.
     if data.get("name"):
-        fields["name"] = str(data["name"])
+        fields["name"] = unescape(str(data["name"]))
 
     sport = data.get("sport")
     if sport:
-        fields["sport"] = str(sport).strip().lower()
+        fields["sport"] = unescape(str(sport)).strip().lower()
 
     if data.get("description"):
-        fields["summary"] = str(data["description"])
+        fields["summary"] = unescape(str(data["description"]))
 
     date_text = _format_date(data)
     if date_text:

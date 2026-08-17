@@ -169,6 +169,19 @@ def crawl_event(
 
         event.name = fields.get("name")
         event.summary = fields.get("summary")
+        # See llm_extractor.rewrite_summary - a second, cheap LLM call producing an
+        # alternative, genuinely reworded version (summary_alt) plus a further-condensed
+        # one-sentence version of it (summary_short). Kept alongside the original rather
+        # than replacing it - see export_events.py, which now shows all three. Only called
+        # when there's actually a summary to work with - nothing to rewrite or condense
+        # otherwise (e.g. an invalid/no-content page never gets one).
+        if event.summary:
+            rewritten = llm_extractor.rewrite_summary(event.summary)
+            event.summary_alt = rewritten["summary_alt"]
+            event.summary_short = rewritten["summary_short"]
+        else:
+            event.summary_alt = None
+            event.summary_short = None
         event.sport = fields.get("sport")
         event.date_text = fields.get("date_text")
         event.location = fields.get("location")
