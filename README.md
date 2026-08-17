@@ -1,6 +1,6 @@
 ﻿# TODOs
 
-## Local AI
+## Wrong AI interpretation / html to markdown conversion
 
 Tree Forts Challene
 There are clearly distances in the url 	https://www.threefortschallenge.org.uk/e/three-forts-challenge-8513
