@@ -24,7 +24,15 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from services.config import settings
 
-_EXCLUDED_TAGS = ["nav", "header", "footer", "aside", "script", "style", "noscript"]
+# No "header" here (deliberately, see below) - <nav>/<footer>/<aside> are reliably
+# page-chrome, but plenty of event-booking sites (e.g. threefortschallenge.org.uk,
+# on Bootstrap-ish templates) reuse a real <header> tag as a *component* wrapper -
+# a ticket/distance card's own title header - not just the page's masthead.
+# Excluding it by bare tag name deletes that card content (the race distance
+# itself) before markdown generation ever sees it. Genuine page-header boilerplate
+# (logo/masthead) still gets dropped by PruningContentFilter's own link-density/
+# boilerplate scoring, same as it already handles most nav/footer noise.
+_EXCLUDED_TAGS = ["nav", "footer", "aside", "script", "style", "noscript"]
 
 # Identifies honestly as settings.user_agent (the same identity robots.py's own
 # is_allowed()/wait_for_crawl_delay() evaluate a site's rules against) rather than
@@ -36,6 +44,13 @@ _BROWSER_CONFIG = BrowserConfig(headless=True, verbose=False, user_agent=setting
 # boilerplate (nav/widgets/ads) the way Firecrawl's Readability-style extraction
 # does - only applied for event detail pages (want_links=False), same as Firecrawl.
 _MAIN_CONTENT_MARKDOWN_GENERATOR = DefaultMarkdownGenerator(content_filter=PruningContentFilter())
+# PruningContentFilter (RelevantContentFilter.__init__ in crawl4ai/content_filter_strategy.py)
+# hardcodes its *own* excluded_tags set - including "header" - with no constructor
+# override, applied unconditionally regardless of the excluded_tags= passed above.
+# Same reasoning as _EXCLUDED_TAGS: drop "header" from it too, or fit_markdown
+# silently loses component-header content (e.g. ticket/distance names) even when
+# our own crawl config no longer excludes the tag.
+_MAIN_CONTENT_MARKDOWN_GENERATOR.content_filter.excluded_tags.discard("header")
 
 _BASE_PAGE_TIMEOUT_MS = 60_000
 

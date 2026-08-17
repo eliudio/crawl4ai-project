@@ -20,9 +20,11 @@ from crawl4ai.content_filter_strategy import PruningContentFilter  # noqa: E402
 from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator  # noqa: E402
 
 # Mirrors crawl4ai_client.py's own config exactly (see _EXCLUDED_TAGS/_MAIN_CONTENT_MARKDOWN_GENERATOR
-# there) - this test is only meaningful if it exercises the same conversion settings production uses.
-_EXCLUDED_TAGS = ["nav", "header", "footer", "aside", "script", "style", "noscript"]
+# there, including the "header" exclusion deliberately left out on both sides) -
+# this test is only meaningful if it exercises the same conversion settings production uses.
+_EXCLUDED_TAGS = ["nav", "footer", "aside", "script", "style", "noscript"]
 _MAIN_CONTENT_MARKDOWN_GENERATOR = DefaultMarkdownGenerator(content_filter=PruningContentFilter())
+_MAIN_CONTENT_MARKDOWN_GENERATOR.content_filter.excluded_tags.discard("header")
 
 _EVENT_PAGE_HTML = """
 <html>
@@ -85,3 +87,62 @@ async def test_raw_html_with_no_real_content_yields_sparse_markdown():
     # conversion itself doesn't error out on a boilerplate-only/near-empty page.
     markdown = await _crawl_raw_html("<html><body><nav>Home | About</nav></body></html>")
     assert "Home | About" not in markdown
+
+
+# Reproduces a real bug found against threefortschallenge.org.uk/e/three-forts-challenge-8513:
+# that site (like many Bootstrap-templated event-booking sites, and per its own markup - the
+# brand/logo lives in <nav>, there is no separate page-masthead <header> at all) marks up each
+# ticket/distance card with a real <header> tag (e.g. <header class="ticket__wrapper">) reused
+# as a component wrapper. Both our own _EXCLUDED_TAGS and PruningContentFilter's *own hardcoded*
+# excluded_tags set (crawl4ai/content_filter_strategy.py's RelevantContentFilter.__init__, not
+# configurable from here) blindly strip every <header> element by tag name, deleting the ticket
+# names ("10K Road Race 2026" etc, i.e. exactly the distance info) before markdown generation
+# ever sees them - while the genuine <nav> boilerplate is correctly still stripped.
+_TICKET_HEADER_EVENT_HTML = """
+<html>
+<head><title>Cliffside Races</title></head>
+<body>
+<nav>Cliffside Race Series | Home | Events | About | Contact</nav>
+<article>
+<h1>Cliffside Races</h1>
+<p>Join us on Sunday 14th June 2026 for a scenic coastal race day with two distances to choose from.</p>
+<div class="ticket-group-title">Cliffside Races</div>
+<div class="ticket">
+  <header class="ticket__wrapper">
+    <div class="ticket__header">10K Road Race 2026</div>
+  </header>
+  <div class="ticket__body">
+    <p><strong>Date:</strong> 14th June 2026</p>
+    <p>&pound;25.00 - Includes medal and t-shirt</p>
+  </div>
+</div>
+<div class="ticket">
+  <header class="ticket__wrapper">
+    <div class="ticket__header">5K Fun Run 2026</div>
+  </header>
+  <div class="ticket__body">
+    <p><strong>Date:</strong> 14th June 2026</p>
+    <p>&pound;15.00 - Includes medal</p>
+  </div>
+</div>
+</article>
+<footer>&copy; 2026 Cliffside Race Series. All rights reserved.</footer>
+</body>
+</html>
+"""
+
+
+@pytest.mark.asyncio
+async def test_raw_html_keeps_component_header_distance_names():
+    markdown = await _crawl_raw_html(_TICKET_HEADER_EVENT_HTML)
+
+    # The per-ticket distance names live inside a <header> used as a component
+    # wrapper, not page chrome - they must survive.
+    assert "10K Road Race 2026" in markdown
+    assert "5K Fun Run 2026" in markdown
+
+    # The real page-level nav (brand + links) and footer are still boilerplate
+    # and should still be stripped, same as the other tests in this file.
+    assert "Home | Events" not in markdown
+    assert "Cliffside Race Series" not in markdown
+    assert "All rights reserved" not in markdown

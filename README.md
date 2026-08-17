@@ -1,14 +1,20 @@
 ﻿# TODOs
 
+## add ID to the events per organiser html page
+
+## can I run a specific organiser with it's id? How can I force to refresh the contents, because I believe 
+  the resu
+
 ## Wrong AI interpretation / html to markdown conversion
 
 Tree Forts Challene
 There are clearly distances in the url 	https://www.threefortschallenge.org.uk/e/three-forts-challenge-8513
 Yet, the crawl / AI interpreted page doesn't include this
 It's probably because somehow to markdown conversion didn't go as it should
-See Page content
+See Page content: the headers are not in line with the html, doesn't include the distance and hence the AI doesn't see
+What's wrong with the HTML -> MD
 
-Create a unit test for this HTML, and test with local AI
+Also: Create a unit test for this specific case, maybe even to test it with failure, fix it, retest it
 
 ## Local AI
 
