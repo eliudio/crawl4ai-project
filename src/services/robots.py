@@ -62,7 +62,25 @@ def _parser_for(domain_root: str) -> Protego:
     return Protego.parse(response.text)
 
 
-def is_allowed(url: str) -> bool:
+def is_allowed(url: str, registrator: str | None = "bot") -> bool:
+    """
+    registrator (see Organiser.registrator's own docstring): "bot" (the default - an
+    unattended automated crawl) always goes through the real robots.txt check below.
+    Any other value names a real person who has separately obtained the site owner's
+    own permission to collect this data - robots.txt is a machine-readable policy for
+    unattended crawlers, not a substitute for that direct human agreement, so a
+    non-"bot" registrator skips the fetch/parse entirely rather than ever being able to
+    come back False. Deliberately does NOT also skip wait_for_crawl_delay() below - that
+    stays in effect regardless of registrator, since pacing requests considerately is
+    about server load, not about who authorised the access.
+
+    A falsy registrator (None/"") is treated the same as "bot", not as "skip the check" -
+    the safe direction to fail in if a caller ever has one to hand at all (e.g. a
+    not-yet-flushed Organiser ORM instance, whose Python-side default= isn't applied
+    until insert) rather than genuinely having resolved a real person's name.
+    """
+    if registrator and registrator != "bot":
+        return True
     if not settings.respect_robots_txt:
         return True
     return _parser_for(_domain_root(url)).can_fetch(url, settings.user_agent)

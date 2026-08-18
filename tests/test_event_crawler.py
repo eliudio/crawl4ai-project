@@ -16,11 +16,25 @@ created.
 """
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine, text
 from sqlalchemy.orm import Session
 
 from services import event_crawler
 from services.models import CrawlRun, Event, EventDistance, EventOccurrence, RaceType
+
+# A reduced stand-in for the real organisers table (id + registrator only) - crawl_event
+# only ever selects Organiser.registrator (see its own comment on why: a column-only
+# select never touches Organiser.listing_urls, the Postgres-only ARRAY column the real
+# table can't even be created with on SQLite - same limitation test_db.py/
+# test_race_types.py/etc. already work around). Organiser.id=1 is left unseeded by
+# default (crawl_event's own "bot" fallback for a missing row is exactly what most tests
+# here want) - see _seed_organiser_registrator below for tests that need a specific one.
+_organisers_metadata = MetaData()
+_organisers_table = Table(
+    "organisers", _organisers_metadata,
+    Column("id", Integer, primary_key=True),
+    Column("registrator", String(64)),
+)
 
 
 @pytest.fixture
@@ -28,8 +42,15 @@ def session():
     engine = create_engine("sqlite:///:memory:")
     for table in (Event.__table__, CrawlRun.__table__, EventDistance.__table__, EventOccurrence.__table__, RaceType.__table__):
         table.metadata.create_all(engine, tables=[table])
+    _organisers_metadata.create_all(engine, tables=[_organisers_table])
     with Session(engine) as session:
         yield session
+
+
+def _seed_organiser_registrator(session: Session, organiser_id: int, registrator: str) -> None:
+    session.execute(text("INSERT INTO organisers (id, registrator) VALUES (:id, :registrator)"),
+                     {"id": organiser_id, "registrator": registrator})
+    session.commit()
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +59,7 @@ def _stub_pipeline(monkeypatch):
     preflight inconclusive (so it falls through instead of hitting the real
     network), scrapes fine, no JSON-LD, LLM returns fields - so the test's own
     injected failure (see test below) is the only thing that goes wrong."""
-    monkeypatch.setattr(event_crawler.robots, "is_allowed", lambda url: True)
+    monkeypatch.setattr(event_crawler.robots, "is_allowed", lambda url, registrator="bot": True)
     monkeypatch.setattr(
         event_crawler.requests,
         "head",
@@ -341,7 +362,7 @@ def test_force_ignores_url_check_style_skip(monkeypatch, session):
 # ---------------------------------------------------------------------------
 
 def test_robots_disallowed_event_is_logged_clearly(monkeypatch, session, capsys):
-    monkeypatch.setattr(event_crawler.robots, "is_allowed", lambda url: False)
+    monkeypatch.setattr(event_crawler.robots, "is_allowed", lambda url, registrator="bot": False)
     monkeypatch.setattr(
         event_crawler.scraper_client, "scrape",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not scrape a robots-disallowed event")),
@@ -355,6 +376,93 @@ def test_robots_disallowed_event_is_logged_clearly(monkeypatch, session, capsys)
     run = session.query(CrawlRun).one()
     assert run.status == event_crawler.CrawlStatus.SKIPPED
     assert run.detail == "disallowed by robots.txt"
+
+
+# ---------------------------------------------------------------------------
+# registrator - see Organiser.registrator's own docstring: resolved from the owning
+# organiser, threaded into robots.is_allowed(), and tagged onto every Event/
+# EventDistance/EventOccurrence row this crawl produces.
+# ---------------------------------------------------------------------------
+
+def test_registrator_resolved_from_organiser_gates_robots_check(monkeypatch, session):
+    _seed_organiser_registrator(session, organiser_id=1, registrator="jane_doe")
+    # Deliberately the inverse of "bot" respects/"other" ignores, so this only passes
+    # if crawl_event actually forwards the organiser's own resolved registrator through -
+    # not just always "bot" (the _stub_pipeline fixture's own default stub) or always
+    # something else.
+    monkeypatch.setattr(event_crawler.robots, "is_allowed", lambda url, registrator="bot": registrator != "bot")
+    monkeypatch.setattr(
+        event_crawler.llm_extractor, "extract_event_fields",
+        lambda url, markdown, known_fields=None: {"name": "Real Event", "sport": "running", "distances": []},
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/human")
+
+    assert event is not None
+    assert event.status == event_crawler.EventStatus.VALID
+
+
+def test_missing_organiser_defaults_registrator_to_bot_and_respects_robots(monkeypatch, session):
+    # organiser_id=1 deliberately left unseeded in the fixture's own organisers table.
+    monkeypatch.setattr(event_crawler.robots, "is_allowed", lambda url, registrator="bot": registrator != "bot")
+
+    result = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/blocked2")
+
+    assert result is None
+    run = session.query(CrawlRun).one()
+    assert run.status == event_crawler.CrawlStatus.SKIPPED
+
+
+def test_event_distance_and_occurrence_rows_tagged_with_organisers_registrator(monkeypatch, session):
+    _seed_organiser_registrator(session, organiser_id=1, registrator="jane_doe")
+    monkeypatch.setattr(
+        event_crawler.llm_extractor, "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Tagged Event", "sport": "running",
+            "distances": [{"distance_text": "10k", "price_text": "£20", "distance_category": "10k"}],
+            "occurrence": "specific_dates",
+            "occurrences": [{"date_text": "18th Aug 2026", "date_iso": "2026-08-18"}],
+        },
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/tagged")
+
+    assert event.registrator == "jane_doe"
+    assert event.distances[0].registrator == "jane_doe"
+    assert event.occurrences[0].registrator == "jane_doe"
+
+
+def test_dead_link_event_tagged_with_organisers_registrator(monkeypatch, session):
+    _seed_organiser_registrator(session, organiser_id=1, registrator="jane_doe")
+    monkeypatch.setattr(event_crawler.requests, "head", lambda url, **kw: _FakeResponse(404))
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/dead-tagged")
+
+    assert event.registrator == "jane_doe"
+
+
+def test_registrator_refreshed_on_recrawl_not_stuck_at_creation_time_value(monkeypatch, session):
+    _seed_organiser_registrator(session, organiser_id=1, registrator="bot")
+    monkeypatch.setattr(
+        event_crawler.llm_extractor, "extract_event_fields",
+        lambda url, markdown, known_fields=None: {"name": "Event", "sport": "running", "distances": []},
+    )
+
+    first = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/refresh")
+    assert first.registrator == "bot"
+
+    # The organiser's own registrator changes between crawls (e.g. the parkrun handler's
+    # own override, see listing_crawler.py's _parkrun_handler) - the next crawl of the
+    # SAME event must pick up the new value, not keep whatever it was first created with.
+    session.execute(text("UPDATE organisers SET registrator = 'jane_doe' WHERE id = 1"))
+    session.commit()
+
+    second = event_crawler.crawl_event(
+        session, organiser_id=1, event_url="https://example.org/event/refresh", check_mode="force"
+    )
+
+    assert second.id == first.id
+    assert second.registrator == "jane_doe"
 
 
 # ---------------------------------------------------------------------------

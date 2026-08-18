@@ -40,12 +40,12 @@ def _strip_ns(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-def _fetch_xml(url: str) -> ElementTree.Element:
+def _fetch_xml(url: str, registrator: str = "bot") -> ElementTree.Element:
     # Covers both callers below (the top-level sitemap and, for a sitemap index, the
     # one sub-sitemap select_events_sitemap picked) - a robots.txt-advertised sitemap
     # is usually fine to read (that's how it got advertised in the first place), but
     # not guaranteed, and the Crawl-delay it declares still applies to this request.
-    if not robots.is_allowed(url):
+    if not robots.is_allowed(url, registrator=registrator):
         # Same grep-able marker as event_crawler.py/listing_crawler.py's own
         # skips - get_event_urls's own except-block print below would otherwise
         # read just like any other fetch failure (network error, bad XML, ...).
@@ -84,7 +84,7 @@ def _child_locs(root: ElementTree.Element, wrapper_tag: str) -> list[str]:
     return urls
 
 
-def get_event_urls(sitemap_url: str, homepage_url: str) -> list[str] | None:
+def get_event_urls(sitemap_url: str, homepage_url: str, registrator: str = "bot") -> list[str] | None:
     """
     Returns the event detail page URLs found via `sitemap_url`, resolving
     one level of sitemap-index indirection if needed (a sitemap index
@@ -98,9 +98,11 @@ def get_event_urls(sitemap_url: str, homepage_url: str) -> list[str] | None:
     that case, not treat it as "this organiser genuinely has zero events".
     An empty list, by contrast, means the sitemap was read successfully but
     genuinely contained no links under the organiser's own domain.
+
+    registrator: forwarded to robots.is_allowed() as-is - see its own docstring.
     """
     try:
-        root = _fetch_xml(sitemap_url)
+        root = _fetch_xml(sitemap_url, registrator=registrator)
     except Exception as e:
         print(f"sitemap_crawler: failed to fetch {sitemap_url}: {type(e).__name__}: {e}")
         return None
@@ -113,7 +115,7 @@ def get_event_urls(sitemap_url: str, homepage_url: str) -> list[str] | None:
             print(f"sitemap_crawler: no events-like sub-sitemap among {len(sub_sitemaps)} in {sitemap_url}")
             return None
         try:
-            root = _fetch_xml(events_sitemap)
+            root = _fetch_xml(events_sitemap, registrator=registrator)
         except Exception as e:
             print(f"sitemap_crawler: failed to fetch {events_sitemap}: {type(e).__name__}: {e}")
             return None

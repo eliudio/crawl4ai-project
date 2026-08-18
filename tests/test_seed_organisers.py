@@ -6,7 +6,7 @@ Organiser's Postgres-only ARRAY-typed listing_urls column, which SQLite can't
 build - same limitation test_export_events.py's own docstring already notes).
 """
 
-from tools.seed_organisers import _handler_params_from_row
+from tools.seed_organisers import _handler_params_from_row, _registrator_from_row
 
 
 def test_sitemap_url_alone_becomes_handler_params():
@@ -39,3 +39,17 @@ def test_sitemap_url_wins_over_a_conflicting_key_in_handler_params_json():
     # whatever the JSON column happened to also contain.
     row = {"sitemap_url": "https://real.example/sitemap.xml", "handler_params": '{"sitemap_url": "https://stale.example/sitemap.xml"}'}
     assert _handler_params_from_row(row)["sitemap_url"] == "https://real.example/sitemap.xml"
+
+
+# ---------------------------------------------------------------------------
+# _registrator_from_row - see Organiser.registrator's own docstring.
+# ---------------------------------------------------------------------------
+
+def test_registrator_column_read_as_is():
+    assert _registrator_from_row({"registrator": "bot"}) == "bot"
+    assert _registrator_from_row({"registrator": "jane_doe"}) == "jane_doe"
+
+
+def test_registrator_defaults_to_bot_when_missing_or_blank():
+    assert _registrator_from_row({}) == "bot"
+    assert _registrator_from_row({"registrator": ""}) == "bot"

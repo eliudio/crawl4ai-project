@@ -24,7 +24,7 @@ _TIMEOUT = 15
 UK_COUNTRY_CODE = 97
 
 
-def get_event_urls(country_code: int = UK_COUNTRY_CODE) -> list[str] | None:
+def get_event_urls(country_code: int = UK_COUNTRY_CODE, registrator: str = "bot") -> list[str] | None:
     """
     Returns every parkrun event page URL for the given country (UK by default),
     built from events.json's own `eventname` slug and that country's base site
@@ -36,8 +36,12 @@ def get_event_urls(country_code: int = UK_COUNTRY_CODE) -> list[str] | None:
     what's expected - matches sitemap_crawler.get_event_urls's own contract, so
     callers can tell "couldn't read the feed this time" apart from "read it
     fine, zero events" (an empty list).
+
+    registrator: forwarded to robots.is_allowed() as-is - see its own docstring and
+    listing_crawler.py's _parkrun_handler, the caller that actually resolves this from
+    the organiser's own registrator/handler_params override.
     """
-    if not robots.is_allowed(EVENTS_JSON_URL):
+    if not robots.is_allowed(EVENTS_JSON_URL, registrator=registrator):
         print(f"ROBOTS-SKIP: {EVENTS_JSON_URL} (parkrun feed)")
         return None
 

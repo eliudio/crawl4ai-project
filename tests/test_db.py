@@ -192,14 +192,16 @@ def test_regression_registration_columns_added_and_backfilled_on_preexisting_tab
         "registration_status", "registration_text",
         "registration_opens_at", "registration_closes_at",
     }
+    # lifecycle_status/registrator are also NOT NULL with no server_default carried over
+    # by this reconstruction (see Column(...) below) - excluded here too so this test's
+    # own INSERT (which predates all three features, not just registration) doesn't trip
+    # over either one.
+    _also_excluded = {"lifecycle_status", "lifecycle_text", "registrator"}
     pre_existing_metadata = MetaData()
     old_columns = [
         Column(c.name, c.type, nullable=c.nullable)
-        # lifecycle_status is also NOT NULL with no server_default carried over by this
-        # reconstruction (see below) - excluded here too so this test's own INSERT (which
-        # predates the registration feature, not just lifecycle) doesn't trip over it.
         for c in Event.__table__.columns
-        if c.name not in new_columns and c.name not in ("lifecycle_status", "lifecycle_text")
+        if c.name not in new_columns and c.name not in _also_excluded
     ]
     Table("events", pre_existing_metadata, *old_columns)
     pre_existing_metadata.create_all(engine)
@@ -228,11 +230,14 @@ def test_regression_lifecycle_columns_added_and_backfilled_on_preexisting_table(
     engine = _make_engine()
 
     new_columns = {"lifecycle_status", "lifecycle_text"}
+    # registrator is also NOT NULL with no server_default carried over by this
+    # reconstruction (see Column(...) below) - excluded here too, same reasoning as the
+    # registration-columns regression test above.
     pre_existing_metadata = MetaData()
     old_columns = [
         Column(c.name, c.type, nullable=c.nullable)
         for c in Event.__table__.columns
-        if c.name not in new_columns
+        if c.name not in new_columns and c.name != "registrator"
     ]
     Table("events", pre_existing_metadata, *old_columns)
     pre_existing_metadata.create_all(engine)
@@ -264,10 +269,12 @@ def test_regression_organiser_handler_added_and_backfilled_on_preexisting_table(
     pre_existing_metadata = MetaData()
     old_columns = [
         # listing_urls (Postgres ARRAY) excluded too - same SQLite limitation as
-        # everywhere else in this file; irrelevant to what this test checks.
+        # everywhere else in this file; irrelevant to what this test checks. registrator
+        # excluded for the same reason as lifecycle_status/registrator in the Event
+        # regression tests above - NOT NULL with no server_default carried over here.
         Column(c.name, c.type, nullable=c.nullable)
         for c in Organiser.__table__.columns
-        if c.name not in new_columns and c.name != "listing_urls"
+        if c.name not in new_columns and c.name not in ("listing_urls", "registrator")
     ]
     Table("organisers", pre_existing_metadata, *old_columns)
     pre_existing_metadata.create_all(engine)
@@ -285,6 +292,67 @@ def test_regression_organiser_handler_added_and_backfilled_on_preexisting_table(
     with engine.connect() as conn:
         handler = conn.exec_driver_sql("SELECT handler FROM organisers WHERE id = 1").scalar()
     assert handler == "default"
+
+
+def test_regression_registrator_column_added_and_backfilled_on_preexisting_events_table():
+    # Same incident class again, for the registrator feature: Event.registrator is NOT
+    # NULL with only a Python-side default= - an `events` table that predates it must
+    # gain it with existing rows backfilled to 'bot', not break.
+    engine = _make_engine()
+
+    pre_existing_metadata = MetaData()
+    old_columns = [
+        Column(c.name, c.type, nullable=c.nullable)
+        for c in Event.__table__.columns
+        if c.name != "registrator"
+    ]
+    Table("events", pre_existing_metadata, *old_columns)
+    pre_existing_metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO events (id, organiser_id, url, status, occurrence, registration_status, "
+            "lifecycle_status, first_seen_at, last_seen_at) VALUES (1, 1, "
+            "'https://example.org/event/pre-existing', 'valid', 'one_off', 'unknown', 'scheduled', "
+            "'2026-01-01T00:00:00', '2026-01-01T00:00:00')"
+        )
+    assert "registrator" not in {c["name"] for c in inspect(engine).get_columns("events")}
+
+    db._add_missing_columns(engine)
+
+    columns = {c["name"] for c in inspect(engine).get_columns("events")}
+    assert "registrator" in columns
+    with engine.connect() as conn:
+        registrator = conn.exec_driver_sql("SELECT registrator FROM events WHERE id = 1").scalar()
+    assert registrator == "bot"
+
+
+def test_regression_registrator_column_added_and_backfilled_on_preexisting_organisers_table():
+    engine = _make_engine()
+
+    pre_existing_metadata = MetaData()
+    old_columns = [
+        # listing_urls (Postgres ARRAY) excluded too - same SQLite limitation as
+        # everywhere else in this file; irrelevant to what this test checks.
+        Column(c.name, c.type, nullable=c.nullable)
+        for c in Organiser.__table__.columns
+        if c.name not in ("listing_urls", "registrator")
+    ]
+    Table("organisers", pre_existing_metadata, *old_columns)
+    pre_existing_metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO organisers (id, name, homepage_url, handler, source_type, active, created_at, updated_at) "
+            "VALUES (1, 'Acme', 'https://acme.example/', 'default', 'organiser', 1, '2026-01-01', '2026-01-01')"
+        )
+    assert "registrator" not in {c["name"] for c in inspect(engine).get_columns("organisers")}
+
+    db._add_missing_columns(engine)
+
+    columns = {c["name"] for c in inspect(engine).get_columns("organisers")}
+    assert "registrator" in columns
+    with engine.connect() as conn:
+        registrator = conn.exec_driver_sql("SELECT registrator FROM organisers WHERE id = 1").scalar()
+    assert registrator == "bot"
 
 
 def test_init_db_calls_add_missing_columns(monkeypatch):

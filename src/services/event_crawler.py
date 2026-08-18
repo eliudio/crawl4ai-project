@@ -26,6 +26,7 @@ from services.models import (
     EventOccurrence,
     EventStatus,
     Occurrence,
+    Organiser,
     RegistrationStatus,
 )
 from services.race_types import get_or_create_race_type
@@ -120,7 +121,18 @@ def crawl_event(
         started_at=now,
     )
 
-    if not robots.is_allowed(event_url):
+    # See Organiser.registrator's own docstring. A column-only select (not
+    # session.get(Organiser, ...)) deliberately - Organiser.listing_urls is a
+    # Postgres-only ARRAY column the whole test suite already can't build on SQLite
+    # (see test_db.py/test_race_types.py/etc.'s own comments to that effect); selecting
+    # only .registrator never touches it, so this still works against the lightweight
+    # SQLite schemas this module's own tests use. "bot" (robots.txt fully respected) is
+    # the correct fallback for a missing organiser - never a real gap in practice, every
+    # organiser_id crawled here comes from a real row, but never silently default to
+    # something more permissive just because the lookup came back empty.
+    registrator = session.scalar(select(Organiser.registrator).where(Organiser.id == organiser_id)) or "bot"
+
+    if not robots.is_allowed(event_url, registrator=registrator):
         # This is what a caller's own "ok"/"FAILED" print (see local_runner.py,
         # main.py) can't tell apart on its own - crawl_event returning None here
         # looks identical to a genuine scrape/extraction failure from the outside.
@@ -156,6 +168,10 @@ def crawl_event(
             event.invalid_reason = f"HTTP {status_code} fetching the page"
             event.last_seen_at = now
             event.last_crawled_at = now
+            # Refreshed on every crawl (not just set at creation) - see Event.registrator's
+            # own docstring: always reflects who/what is CURRENTLY responsible, not whoever
+            # happened to first discover this URL.
+            event.registrator = registrator
             run.status = CrawlStatus.SUCCESS
             run.detail = f"confirmed dead link (HTTP {status_code})"
             run.finished_at = datetime.now(timezone.utc)
@@ -197,6 +213,8 @@ def crawl_event(
         else:
             event = Event(organiser_id=organiser_id, url=event_url, first_seen_at=now)
             session.add(event)
+        # See the dead-link branch above's own comment - refreshed every crawl.
+        event.registrator = registrator
 
         event.name = fields.get("name")
         event.summary = fields.get("summary")
@@ -276,6 +294,7 @@ def crawl_event(
                     price_text=d.get("price_text"),
                     sort_order=i,
                     race_type=race_type,
+                    registrator=registrator,
                 )
             )
         # See models.py's Occurrence docstring for the two mechanisms this splits into.
@@ -305,6 +324,7 @@ def crawl_event(
                     time_text=o.get("time_text"),
                     price_text=o.get("price_text"),
                     sort_order=i,
+                    registrator=registrator,
                 )
             )
 

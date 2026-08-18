@@ -23,21 +23,6 @@ https://www.zigzagrunning.co.uk/event-details/two-hundred-miles-challenge is det
 That makes no sense. Perhaps this is the best we can do, if we don't want to spend too much. But perhaps this is 
 an easy fix, basically we want events where no location exists to be : unknown location
 
-## add a reporter field to the events, event_distances, event_occurrences and organisers + force parkrun to be populated regardless of robots.txt
-AI: 
-1) add to the orgainsers_seed.csv: add a field registrator and populate this field with "bot" across the board
-2) pass this entry registrator to the handler as an argument. Use it in the handler when creating 
-an entry in events, event_distances, event_occurrences and organisers
-3) if the registrator is "bot" then the handler must check robots.txt and all handlers should respect it, in this case, 
-i.e when registrator is "bot". If not, then skip checking robots.txt. So this is the case for the parkrun handler as
-well as all other handlers
-4) the parkrun handler should have a configurable parameter to override registrator it uses. The parkrun handler 
-should override the registrator before anything else, i.e. before the logic if or if not robots.txt needs to be respected
-5) add to the readme some guidelines why this configuration for parkrun handler exists, basically:
-We must run the parkrun handler / seeding with the configurable parameter of the registrator to be some human, not "bot"
-This to force ignoring robots.txt and to have an actual user being the responsible for registering the event.
-Hence we do not want to run this seed script too often, so that changes on the site aren't automatically populated
-and the scraping isn't detected
 
 ## add history
 

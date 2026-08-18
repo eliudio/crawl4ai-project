@@ -198,6 +198,20 @@ class Organiser(Base):
     # this is expected to stay a small, hand-maintained set of special cases.
     handler_params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    # Who/what is responsible for this organiser's data being collected at all - see
+    # robots.py's is_allowed(): "bot" (the default, and what organisers_seed.csv seeds
+    # every row with) means an unattended automated crawl, which must respect robots.txt/
+    # a site's stated crawling policy. Any other value names a real person who has
+    # separately obtained the site owner's own permission to collect this data outside
+    # what robots.txt alone would allow - see README.md's "registrator" section for why
+    # this exists and the parkrun handler's own registrator override in particular.
+    # Propagated onto every Event/EventDistance/EventOccurrence this organiser's crawl
+    # produces (see event_crawler.py), not just kept here, so each row's own provenance
+    # is self-contained and doesn't require joining back to organisers to know it.
+    # server_default for the same _add_missing_columns auto-migration reasoning as
+    # handler above.
+    registrator: Mapped[str] = mapped_column(String(64), default="bot", server_default="bot")
+
     # Only "organiser" rows are ever fed to the event-crawl queue. Rows
     # discovered on aggregator/platform sites are recorded for provenance
     # but structurally excluded from event crawling.
@@ -357,6 +371,12 @@ class Event(Base):
     )
     last_crawled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # See Organiser.registrator's own docstring - set from the owning organiser's current
+    # registrator at crawl time (event_crawler.py), refreshed on every re-crawl rather than
+    # only at creation, so this always reflects who/what is CURRENTLY responsible for this
+    # row's data, not a stale value from whenever it first appeared.
+    registrator: Mapped[str] = mapped_column(String(64), default="bot", server_default="bot")
+
     organiser: Mapped["Organiser"] = relationship(back_populates="events")
     # Most events offer more than one distance, each with its own price (e.g. "5k: £15",
     # "10k: £20") - that's a one-to-many relationship, not a pair of scalar columns on
@@ -419,6 +439,10 @@ class EventDistance(Base):
     # (the verbatim page text) are still stored either way.
     race_type_id: Mapped[int | None] = mapped_column(ForeignKey("race_types.id"), nullable=True)
 
+    # See Organiser.registrator's own docstring - same value as the owning Event's own
+    # registrator at the time this row was (re-)written.
+    registrator: Mapped[str] = mapped_column(String(64), default="bot", server_default="bot")
+
     event: Mapped["Event"] = relationship(back_populates="distances")
     race_type: Mapped["RaceType | None"] = relationship(back_populates="distances")
 
@@ -469,6 +493,10 @@ class EventOccurrence(Base):
     # to matching on (event_id, starts_at) via the unique constraint above when a
     # platform doesn't expose one).
     external_ticket_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # See Organiser.registrator's own docstring - same value as the owning Event's own
+    # registrator at the time this row was (re-)written.
+    registrator: Mapped[str] = mapped_column(String(64), default="bot", server_default="bot")
 
     event: Mapped["Event"] = relationship(back_populates="occurrences")
 

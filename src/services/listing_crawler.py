@@ -279,7 +279,7 @@ def _discover_listing_urls(session: Session, organiser: Organiser) -> list[str]:
     all three cases: events on the homepage itself, a single dedicated
     listing page, or several (e.g. per-category) listing pages.
     """
-    if not robots.is_allowed(organiser.homepage_url):
+    if not robots.is_allowed(organiser.homepage_url, registrator=organiser.registrator):
         print(f"ROBOTS-SKIP: {organiser.homepage_url} (listing discovery)")
         return []
 
@@ -450,7 +450,7 @@ def _crawl_one_listing_url(
             started_at=datetime.now(timezone.utc),
         )
 
-        if not robots.is_allowed(page_url):
+        if not robots.is_allowed(page_url, registrator=organiser.registrator):
             # See event_crawler.py's own ROBOTS-SKIP print - same grep-able marker,
             # so a skipped listing page isn't silently indistinguishable from one
             # that genuinely failed to scrape/analyze.
@@ -513,7 +513,7 @@ def _crawl_from_sitemap(session: Session, organiser: Organiser, sitemap_url: str
     has zero events". force=True returns every URL in the sitemap, not just ones
     missing from the database - see crawl_listing.
     """
-    event_urls = sitemap_crawler.get_event_urls(sitemap_url, organiser.homepage_url)
+    event_urls = sitemap_crawler.get_event_urls(sitemap_url, organiser.homepage_url, registrator=organiser.registrator)
     if event_urls is None:
         print(f"DEBUG sitemap {sitemap_url!r} unusable, falling back to listing_urls")
         return None
@@ -577,8 +577,26 @@ def _parkrun_handler(session: Session, organiser: Organiser, params: dict, force
     default_handler's LLM-guessing could make sense of; falling back to it would just
     burn an LLM call for nothing. Returns [] in that case instead, same as any other
     organiser whose listing genuinely has nothing crawlable this run.
+
+    handler_params["registrator"]: an optional override of organiser.registrator,
+    applied here before anything else in this function - including before the
+    robots.txt-respecting-or-not decision that registrator itself controls (see
+    robots.is_allowed's own docstring and README.md's "registrator" section for why
+    this override exists and the real-person-authorisation it stands in for). Persisted
+    onto the organiser row itself (not just used locally for this one call) so
+    event_crawler.py's later per-event crawls of the URLs this run discovers see the
+    same, already-resolved registrator too, without each of those separate calls having
+    to know about this override mechanism themselves.
     """
-    event_urls = parkrun_feed.get_event_urls(country_code=params.get("country_code", parkrun_feed.UK_COUNTRY_CODE))
+    override = params.get("registrator")
+    if override and organiser.registrator != override:
+        organiser.registrator = override
+        session.add(organiser)
+
+    event_urls = parkrun_feed.get_event_urls(
+        country_code=params.get("country_code", parkrun_feed.UK_COUNTRY_CODE),
+        registrator=organiser.registrator,
+    )
     if event_urls is None:
         print("DEBUG parkrun feed unusable this run")
         return []

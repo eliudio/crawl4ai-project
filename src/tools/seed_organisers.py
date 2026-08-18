@@ -46,6 +46,14 @@ def _handler_params_from_row(row: dict) -> dict | None:
     return params or None
 
 
+def _registrator_from_row(row: dict) -> str:
+    """Defaults to "bot" when the CSV column is missing/blank - see Organiser.registrator's
+    own docstring for what this value means. Every row in organisers_seed.csv sets this
+    explicitly, but a blank cell (or an older CSV predating this column) must not become
+    an invalid empty-string registrator."""
+    return row.get("registrator") or "bot"
+
+
 def seed_from_csv(csv_path: Path = SEED_CSV) -> list[int]:
     """Insert any organiser rows not already present (matched by homepage_url). Returns all organiser ids."""
     init_db()
@@ -67,6 +75,20 @@ def seed_from_csv(csv_path: Path = SEED_CSV) -> list[int]:
                 if sitemap_url and (existing.handler_params or {}).get("sitemap_url") != sitemap_url:
                     existing.handler_params = {**(existing.handler_params or {}), "sitemap_url": sitemap_url}
                     session.add(existing)
+                # The CSV's registrator is the current source of truth, not just a
+                # one-time initial value - see Organiser.registrator's own docstring.
+                # Synced on every re-seed (same spirit as sitemap_url above) so editing
+                # this column and re-running seeding is how a registrator actually gets
+                # changed for an already-existing organiser - crawls after this point
+                # (crawl_event/_parkrun_handler etc. all read Organiser.registrator fresh
+                # each time) pick up the new value from here on, matching the crowd-
+                # sourced model this is meant to support: someone updates the CSV/record
+                # to reflect who's currently responsible, and that takes effect going
+                # forward - it never rewrites rows already written under the old value.
+                new_registrator = _registrator_from_row(row)
+                if existing.registrator != new_registrator:
+                    existing.registrator = new_registrator
+                    session.add(existing)
                 ids.append(existing.id)
                 continue
 
@@ -78,6 +100,7 @@ def seed_from_csv(csv_path: Path = SEED_CSV) -> list[int]:
                 discovered_via=row["discovered_via"],
                 handler=row.get("handler") or "default",
                 handler_params=_handler_params_from_row(row),
+                registrator=_registrator_from_row(row),
             )
             session.add(organiser)
             session.flush()  # assign organiser.id

@@ -93,6 +93,39 @@ def test_respect_robots_txt_disabled_allows_everything(monkeypatch):
     assert robots.is_allowed("https://example.com/private/anything") is True
 
 
+# ---------------------------------------------------------------------------
+# registrator - see Organiser.registrator's own docstring: "bot" (the default) always
+# respects robots.txt; any other value names a real person with the site owner's own
+# separately-obtained permission, and skips the check entirely.
+# ---------------------------------------------------------------------------
+
+def test_non_bot_registrator_skips_the_check_entirely(monkeypatch):
+    monkeypatch.setattr(
+        robots.requests, "get",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not fetch robots.txt for a non-bot registrator")),
+    )
+    assert robots.is_allowed("https://example.com/private/anything", registrator="jane_doe") is True
+
+
+def test_bot_registrator_is_the_default_and_still_disallowed(monkeypatch):
+    monkeypatch.setattr(robots.requests, "get", _fake_get({
+        "https://example.com": (200, "User-agent: *\nDisallow: /private/\n"),
+    }))
+    assert robots.is_allowed("https://example.com/private/page") is False
+    assert robots.is_allowed("https://example.com/private/page", registrator="bot") is False
+
+
+def test_falsy_registrator_treated_as_bot_not_as_skip(monkeypatch):
+    # A not-yet-flushed Organiser ORM instance has registrator=None until its Python-side
+    # default= is applied at insert - must fail safe (still check robots.txt), not be
+    # mistaken for a resolved human override.
+    monkeypatch.setattr(robots.requests, "get", _fake_get({
+        "https://example.com": (200, "User-agent: *\nDisallow: /private/\n"),
+    }))
+    assert robots.is_allowed("https://example.com/private/page", registrator=None) is False
+    assert robots.is_allowed("https://example.com/private/page", registrator="") is False
+
+
 def test_parser_cached_per_domain_not_refetched(monkeypatch):
     calls = []
 
@@ -231,3 +264,23 @@ def test_respect_robots_txt_disabled_skips_throttling(monkeypatch):
     robots.wait_for_crawl_delay("https://example.com/a")
 
     assert slept == []
+
+
+def test_crawl_delay_applies_regardless_of_registrator(monkeypatch):
+    # Deliberate: registrator only gates the allow/disallow check (is_allowed) - a
+    # non-"bot" registrator does not also exempt requests from Crawl-delay pacing, since
+    # that's about server load, not about who authorised the access. wait_for_crawl_delay
+    # doesn't even take a registrator argument - this documents that it isn't meant to.
+    monkeypatch.setattr(robots.requests, "get", _fake_get({
+        "https://example.com": (200, "User-agent: *\nCrawl-delay: 5\n"),
+    }))
+    slept = []
+    monkeypatch.setattr(robots.time, "sleep", lambda s: slept.append(s))
+    fake_now = [1000.0]
+    monkeypatch.setattr(robots.time, "monotonic", lambda: fake_now[0])
+
+    robots.wait_for_crawl_delay("https://example.com/a")
+    fake_now[0] += 2.0
+    robots.wait_for_crawl_delay("https://example.com/b")
+
+    assert slept == [3.0]

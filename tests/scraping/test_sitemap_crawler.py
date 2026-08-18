@@ -222,7 +222,7 @@ def test_get_event_urls_none_when_disallowed_by_robots(monkeypatch, capsys):
     # A robots.txt-advertised sitemap is usually fine to fetch (that's how it got
     # advertised), but not guaranteed - _fetch_xml must still check, and must not
     # touch the network for the sitemap itself when it doesn't.
-    monkeypatch.setattr(sitemap_crawler.robots, "is_allowed", lambda url: False)
+    monkeypatch.setattr(sitemap_crawler.robots, "is_allowed", lambda url, registrator="bot": False)
     monkeypatch.setattr(
         sitemap_crawler.requests, "get",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not fetch a robots-disallowed sitemap")),
@@ -234,6 +234,23 @@ def test_get_event_urls_none_when_disallowed_by_robots(monkeypatch, capsys):
     # Same grep-able marker as event_crawler.py/listing_crawler.py's own skips -
     # otherwise this reads just like any other "failed to fetch" in the log.
     assert "ROBOTS-SKIP: https://example.com/sitemap.xml (sitemap)" in capsys.readouterr().out
+
+
+def test_registrator_forwarded_to_robots_is_allowed(monkeypatch):
+    captured = {}
+
+    def fake_is_allowed(url, registrator="bot"):
+        captured["registrator"] = registrator
+        return True
+
+    monkeypatch.setattr(sitemap_crawler.robots, "is_allowed", fake_is_allowed)
+    # get_event_urls's own try/except around _fetch_xml swallows this - only the
+    # registrator forwarding above matters to this test, not what happens after.
+    monkeypatch.setattr(sitemap_crawler.requests, "get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("stop here")))
+
+    sitemap_crawler.get_event_urls("https://example.com/sitemap.xml", "https://example.com/", registrator="jane_doe")
+
+    assert captured["registrator"] == "jane_doe"
 
 
 def test_get_event_urls_none_on_fetch_failure(monkeypatch):

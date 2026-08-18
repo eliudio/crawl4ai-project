@@ -261,7 +261,7 @@ def test_discover_listing_urls_respects_robots_disallow(monkeypatch, capsys):
     organiser = Organiser(homepage_url="https://example.com/")
     session = _FakeSession()
 
-    monkeypatch.setattr(listing_crawler.robots, "is_allowed", lambda url: False)
+    monkeypatch.setattr(listing_crawler.robots, "is_allowed", lambda url, registrator="bot": False)
     monkeypatch.setattr(
         listing_crawler.scraper_client, "scrape",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not scrape a robots-disallowed homepage")),
@@ -280,7 +280,7 @@ def test_discover_listing_urls_scrapes_when_allowed(monkeypatch):
     organiser = Organiser(homepage_url="https://example.com/")
     session = _FakeSession()
 
-    monkeypatch.setattr(listing_crawler.robots, "is_allowed", lambda url: True)
+    monkeypatch.setattr(listing_crawler.robots, "is_allowed", lambda url, registrator="bot": True)
     monkeypatch.setattr(
         listing_crawler.scraper_client, "scrape",
         lambda url, want_links=False: ("markdown", ["https://example.com/events"], "", url),
@@ -303,7 +303,7 @@ def test_crawl_one_listing_url_respects_robots_disallow_and_logs_it(monkeypatch,
     organiser.id = 1
     session = _FakeSession()
 
-    monkeypatch.setattr(listing_crawler.robots, "is_allowed", lambda url: False)
+    monkeypatch.setattr(listing_crawler.robots, "is_allowed", lambda url, registrator="bot": False)
     monkeypatch.setattr(
         listing_crawler, "_analyze_page",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not analyze a robots-disallowed listing page")),
@@ -350,7 +350,7 @@ class _FakeExistingUrlsSession:
 
 
 def _stub_two_confirmed_events(monkeypatch):
-    monkeypatch.setattr(listing_crawler.robots, "is_allowed", lambda url: True)
+    monkeypatch.setattr(listing_crawler.robots, "is_allowed", lambda url, registrator="bot": True)
     monkeypatch.setattr(
         listing_crawler, "_analyze_page",
         lambda page_url, homepage_url: (
@@ -539,7 +539,7 @@ def test_parkrun_handler_returns_feed_urls(monkeypatch):
 
     monkeypatch.setattr(
         listing_crawler.parkrun_feed, "get_event_urls",
-        lambda country_code=97: ["https://www.parkrun.org.uk/bushy/", "https://www.parkrun.org.uk/southwark/"],
+        lambda country_code=97, registrator="bot": ["https://www.parkrun.org.uk/bushy/", "https://www.parkrun.org.uk/southwark/"],
     )
 
     urls = listing_crawler._parkrun_handler(session, organiser, {})
@@ -553,7 +553,7 @@ def test_parkrun_handler_respects_country_code_param(monkeypatch):
     session = _FakeExistingUrlsSession([])
     captured = {}
 
-    def fake_get_event_urls(country_code=97):
+    def fake_get_event_urls(country_code=97, registrator="bot"):
         captured["country_code"] = country_code
         return []
 
@@ -569,7 +569,7 @@ def test_parkrun_handler_returns_empty_list_with_no_fallback_when_feed_unusable(
     organiser.id = 1
     session = _FakeExistingUrlsSession([])
 
-    monkeypatch.setattr(listing_crawler.parkrun_feed, "get_event_urls", lambda country_code=97: None)
+    monkeypatch.setattr(listing_crawler.parkrun_feed, "get_event_urls", lambda country_code=97, registrator="bot": None)
     monkeypatch.setattr(
         listing_crawler, "default_handler",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("parkrun handler must not fall back to default_handler")),
@@ -578,6 +578,56 @@ def test_parkrun_handler_returns_empty_list_with_no_fallback_when_feed_unusable(
     urls = listing_crawler._parkrun_handler(session, organiser, {})
 
     assert urls == []
+
+
+# ---------------------------------------------------------------------------
+# _parkrun_handler's own registrator override (handler_params["registrator"]) - see
+# its own docstring and README.md's "registrator" section. Applied before anything
+# else, including before the value that's forwarded into the robots.txt check.
+# ---------------------------------------------------------------------------
+
+def test_parkrun_handler_registrator_override_applied_before_fetching_feed(monkeypatch):
+    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
+    organiser.id = 1
+    organiser.registrator = "bot"
+    session = _FakeExistingUrlsSession([])
+    captured = {}
+
+    def fake_get_event_urls(country_code=97, registrator="bot"):
+        # The override must already be resolved on the organiser by the time this
+        # (robots-gated) call happens - not applied afterwards.
+        captured["registrator"] = registrator
+        captured["organiser_registrator_at_call_time"] = organiser.registrator
+        return []
+
+    monkeypatch.setattr(listing_crawler.parkrun_feed, "get_event_urls", fake_get_event_urls)
+
+    listing_crawler._parkrun_handler(session, organiser, {"registrator": "jane_doe"})
+
+    assert captured["registrator"] == "jane_doe"
+    assert captured["organiser_registrator_at_call_time"] == "jane_doe"
+    # Persisted onto the organiser row itself, not just used locally for this call -
+    # event_crawler.py's later per-event crawls read organiser.registrator too.
+    assert organiser.registrator == "jane_doe"
+
+
+def test_parkrun_handler_no_override_uses_organisers_own_registrator(monkeypatch):
+    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
+    organiser.id = 1
+    organiser.registrator = "bot"
+    session = _FakeExistingUrlsSession([])
+    captured = {}
+
+    def fake_get_event_urls(country_code=97, registrator="bot"):
+        captured["registrator"] = registrator
+        return []
+
+    monkeypatch.setattr(listing_crawler.parkrun_feed, "get_event_urls", fake_get_event_urls)
+
+    listing_crawler._parkrun_handler(session, organiser, {})
+
+    assert captured["registrator"] == "bot"
+    assert organiser.registrator == "bot"
 
 
 # ---------------------------------------------------------------------------

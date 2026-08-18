@@ -39,7 +39,7 @@ _SAMPLE_FEED = {
 
 @pytest.fixture(autouse=True)
 def _allow_robots(monkeypatch):
-    monkeypatch.setattr(parkrun_feed.robots, "is_allowed", lambda url: True)
+    monkeypatch.setattr(parkrun_feed.robots, "is_allowed", lambda url, registrator="bot": True)
 
 
 def test_builds_urls_for_the_requested_country_only(monkeypatch):
@@ -58,8 +58,23 @@ def test_different_country_code_gets_its_own_events(monkeypatch):
     assert urls == ["https://www.parkrun.us/central/"]
 
 
+def test_registrator_forwarded_to_robots_is_allowed(monkeypatch):
+    captured = {}
+
+    def fake_is_allowed(url, registrator="bot"):
+        captured["registrator"] = registrator
+        return True
+
+    monkeypatch.setattr(parkrun_feed.robots, "is_allowed", fake_is_allowed)
+    monkeypatch.setattr(parkrun_feed.requests, "get", lambda *a, **kw: _FakeResponse(_SAMPLE_FEED))
+
+    parkrun_feed.get_event_urls(country_code=97, registrator="jane_doe")
+
+    assert captured["registrator"] == "jane_doe"
+
+
 def test_returns_none_when_robots_disallows(monkeypatch, capsys):
-    monkeypatch.setattr(parkrun_feed.robots, "is_allowed", lambda url: False)
+    monkeypatch.setattr(parkrun_feed.robots, "is_allowed", lambda url, registrator="bot": False)
     monkeypatch.setattr(
         parkrun_feed.requests, "get",
         lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not fetch when robots disallows")),
