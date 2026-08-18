@@ -36,6 +36,34 @@ We are redirecting you to https://example.com/new-location. Continue to
 https://example.com/new-location.
 """
 
+# Real (trimmed) structure from runthrough.co.uk/event/southampton-running-festival-
+# august-2027 - confirmed in practice to misattribute every price by one: the site's
+# distance-tab widget shows the default-selected tab's (5K's) price with no distance
+# label directly on it (the label only appears earlier, in the "Select Distance" menu
+# line), while every other distance's label does appear right before its own price.
+# Read as flat, position-ordered text, that leaves one price with no adjacent label
+# followed by three label+price pairs - a naive "match each price to the nearest
+# preceding label" reading pairs 10K with 5K's leading price and shifts everything
+# after it by one, leaving 5K with no price at all.
+_TAB_WIDGET_LEADING_PRICE_MARKDOWN = """
+# Southampton Running Festival
+
+Race Distance
+Select Distance 5K  10K  Half Marathon  Junior Race
+
+## Race Entry Summary
+
+Here are the races available for RunThrough UK August 2027
+
+£28
+10K
+£30
+Half Marathon
+£36
+Junior Race
+£10
+"""
+
 
 def test_real_event_page_extracts_sane_fields():
     fields = llm_extractor.extract_event_fields(
@@ -57,6 +85,30 @@ def test_real_event_page_extracts_sane_fields():
     # "some price got attached to something".
     ten_k = next(d for d in distances if "10k" in d["distance_text"].lower())
     assert "25" in (ten_k["price_text"] or "")
+
+
+def test_tab_widget_leading_price_matches_first_menu_distance_not_shifted():
+    fields = llm_extractor.extract_event_fields(
+        "https://example.com/event/southampton-running-festival-august-2027",
+        _TAB_WIDGET_LEADING_PRICE_MARKDOWN,
+    )
+
+    assert fields is not None
+    distances = fields["distances"]
+    assert len(distances) == 4
+
+    def price_of(substring: str) -> str | None:
+        d = next(d for d in distances if substring in d["distance_text"].lower())
+        return d["price_text"]
+
+    # Bug seen in practice: 5K ended up with no price at all, and every other
+    # distance carried the PREVIOUS distance's price (10K got 5K's £28, Half
+    # Marathon got 10K's £30) - only Junior Race, at the end of the list, was
+    # unaffected. Each distance must carry its own price, not its predecessor's.
+    assert price_of("5k") is not None and "28" in price_of("5k")
+    assert "30" in (price_of("10k") or "")
+    assert "36" in (price_of("half marathon") or "")
+    assert "10" in (price_of("junior") or "")
 
 
 def test_redirect_page_flagged_invalid_not_mined_for_fake_details():

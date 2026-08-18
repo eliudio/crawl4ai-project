@@ -257,4 +257,90 @@ def test_rewrite_summary_failure_returns_none_values(monkeypatch):
 
 def test_rewrite_summary_missing_keys_in_response_become_none(monkeypatch):
     _patch_run_llm(monkeypatch, {})  # a malformed/partial response
+
+
+# ---------------------------------------------------------------------------
+# _fix_tab_widget_leading_price - see the reported case: runthrough.co.uk's
+# Southampton Running Festival page had 5K's price left unattributed and every
+# other distance's price shifted onto its predecessor (10K got 5K's £28, Half
+# Marathon got 10K's £30) because the page's distance-tab widget shows the
+# default-selected tab's price with no label right next to it at all - only the
+# tab menu line above names it. A prompt-only fix wasn't reliable enough (see
+# tests/local_llm/test_extract_fields_local.py), so the ambiguity is now
+# resolved deterministically before the markdown ever reaches the LLM.
+# ---------------------------------------------------------------------------
+
+_TAB_WIDGET_MARKDOWN = """
+# Southampton Running Festival
+
+Race Distance
+Select Distance 5K  10K  Half Marathon  Junior Race
+
+## Race Entry Summary
+
+Here are the races available for RunThrough UK August 2027
+
+£28
+10K
+£30
+Half Marathon
+£36
+Junior Race
+£10
+"""
+
+
+def test_fix_tab_widget_leading_price_inserts_missing_first_label():
+    fixed = llm_extractor._fix_tab_widget_leading_price(_TAB_WIDGET_MARKDOWN)
+
+    lines = [line.strip() for line in fixed.splitlines() if line.strip()]
+    price_idx = lines.index("£28")
+    assert lines[price_idx - 1] == "5K"
+    # Nothing else in the list should have moved.
+    assert lines[price_idx - 1:price_idx + 7] == [
+        "5K", "£28", "10K", "£30", "Half Marathon", "£36", "Junior Race", "£10",
+    ]
+
+
+def test_fix_tab_widget_leading_price_noop_when_already_labeled():
+    already_fine = """
+Select Distance 5K  10K
+
+5K
+£28
+10K
+£30
+"""
+    assert llm_extractor._fix_tab_widget_leading_price(already_fine) == already_fine
+
+
+def test_fix_tab_widget_leading_price_noop_without_menu_line():
+    plain = """
+## Distances
+
+- 10k - £25
+- 5k Fun Run - £15
+"""
+    assert llm_extractor._fix_tab_widget_leading_price(plain) == plain
+
+
+def test_fix_tab_widget_leading_price_noop_when_order_doesnt_match_menu():
+    # A leading price followed by unrelated content - not this widget's shape at all,
+    # so nothing should be invented.
+    unrelated = """
+Select Distance 5K  10K
+
+£28
+Some unrelated paragraph mentioning 10K in passing.
+"""
+    assert llm_extractor._fix_tab_widget_leading_price(unrelated) == unrelated
+
+
+def test_extract_event_fields_applies_tab_widget_fix_before_prompting_llm(monkeypatch):
+    capture = {}
+    _patch_run_llm(monkeypatch, _FULL_LLM_RESPONSE, capture)
+
+    llm_extractor.extract_event_fields("https://example.com/event", _TAB_WIDGET_MARKDOWN)
+
+    assert "5K\n£28" in capture["user_prompt"]
     assert llm_extractor.rewrite_summary("Some summary.") == {"summary_alt": None, "summary_short": None}

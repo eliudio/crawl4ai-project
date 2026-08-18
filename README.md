@@ -5,58 +5,10 @@
 pleppys.com
 For the plebs, by the plebs, for free, always
 
-## this is how the structure of the events looks now
-
- event_distances | id                   | integer                  | NO
- event_distances | event_id             | integer                  | NO
- event_distances | sort_order           | integer                  | NO
- event_distances | distance_text        | character varying        | NO
- event_distances | price_text           | character varying        | YES
- event_distances | race_type_id         | integer                  | YES
- events          | id                   | integer                  | NO
- events          | organiser_id         | integer                  | NO
- events          | url                  | character varying        | NO
- events          | name                 | character varying        | YES
- events          | summary              | text                     | YES
- events          | summary_alt          | text                     | YES
- events          | summary_short        | text                     | YES
- events          | sport                | character varying        | YES
- events          | date_text            | character varying        | YES
- events          | location             | character varying        | YES
- events          | start_location       | character varying        | YES
- events          | finish_location      | character varying        | YES
- events          | age_restriction_text | text                     | YES
- events          | status               | USER-DEFINED             | NO
- events          | invalid_reason       | character varying        | YES
- events          | raw_markdown         | text                     | YES
- events          | content_hash         | character varying        | YES
- events          | first_seen_at        | timestamp with time zone | NO
- events          | last_seen_at         | timestamp with time zone | NO
- events          | last_crawled_at      | timestamp with time zone | YES
- race_types      | id                   | integer                  | NO
- race_types      | label                | character varying        | NO
- race_types      | sport                | USER-DEFINED             | NO
- race_types      | distance_category    | character varying        | NO
- race_types      | created_at           | timestamp with time zone | NO
-
-## We need specific scrapers for specific events that are preseted differently. These need a specific
-   local script, and a way to repeat this as a service as well. This latter needs some rethinking
-   perhaps of the architecture
-   Case: https://images.parkrun.com/events.json
-
 ## An event can have some extra fields:
    - subscription opening and closing date and time
-   - geometry being a more specific location
 
    extend the events table and cater for this 
-
-## An event can be repeating event
-   An example of this is https://www.atwevents.co.uk/e/open-water-swimming-at-merchant-taylors-school-8890
-   Extend events table, and cater for this
-   Add a field occurrence which can be one-off, daily, weekly, monthly, yearly and specific_dates
-   Add a sub table / structure (inner table if possible, else external table) for event-specific-dates
-   This event-specific-dates should include date and time
-   In terms of scraping, we need to cater for this also. So inspect 
 
 ## Introduce a server based database, google probably, cheap / free
    Then also create some quick way to view events from that database, like the extract but then from that database

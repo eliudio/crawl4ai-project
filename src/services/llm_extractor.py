@@ -16,6 +16,7 @@ hosted API.
 """
 
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -555,6 +556,76 @@ def _run_llm(
     return _call_grok(system_prompt, user_prompt, max_tokens)
 
 
+_PRICE_LINE_RE = re.compile(r"^\s*[£$€]\s?\d")
+
+
+def _fix_tab_widget_leading_price(markdown: str) -> str:
+    """
+    Deterministic pre-LLM markdown fix for a distance-tab widget rendering pattern -
+    confirmed in practice on runthrough.co.uk (e.g. the Southampton Running Festival page):
+    a "Select Distance 5K  10K  Half Marathon  Junior Race" menu line, followed by a flat
+    list where the *first* (default-selected) tab's price has no distance label directly on
+    it at all - only the other tabs' labels appear right before their own price ("£28 / 10K /
+    £30 / Half Marathon / £36 / Junior Race / £10"). Read as flat text, that's one label-less
+    price followed by three clean label+price pairs - pairing each price with its nearest
+    preceding label shifts every price back by one distance and leaves the first with none.
+    A prompt-only fix ("watch out for this pattern") turned out not to be reliable enough
+    against a smaller model (confirmed in practice against qwen2.5:7b - see
+    tests/local_llm/test_extract_fields_local.py), so the ambiguity is removed from the text
+    itself instead, before it ever reaches the LLM.
+
+    A no-op whenever the pattern doesn't actually match: no "Select Distance" menu line, the
+    leading price already has its own label, or the labels after it don't follow the menu's
+    own order (too different a layout to safely guess at).
+    """
+    lines = markdown.splitlines()
+
+    menu_idx = next(
+        (i for i, line in enumerate(lines) if re.match(r"^\s*select distance\s+\S", line, re.IGNORECASE)),
+        None,
+    )
+    if menu_idx is None:
+        return markdown
+
+    menu_text = re.sub(r"^\s*select distance\s+", "", lines[menu_idx], flags=re.IGNORECASE).strip()
+    # Labels are separated by runs of 2+ spaces in practice - a single space is reserved for
+    # a multi-word label like "Half Marathon"/"Junior Race" itself.
+    menu_labels = [label.strip() for label in re.split(r" {2,}", menu_text) if label.strip()]
+    if len(menu_labels) < 2:
+        return markdown
+
+    # The first price-like line after the menu - the candidate "leading, label-less price".
+    price_idx = next(
+        (i for i in range(menu_idx + 1, len(lines)) if _PRICE_LINE_RE.match(lines[i])),
+        None,
+    )
+    if price_idx is None:
+        return markdown
+
+    preceding = next((lines[i].strip() for i in range(price_idx - 1, menu_idx, -1) if lines[i].strip()), "")
+    if preceding.lower() == menu_labels[0].lower():
+        return markdown  # already labeled - not the pattern this guards against
+
+    # Confirm the rest of the list actually follows the menu's own order (label, price,
+    # label, price, ...) before touching anything - a coincidental leading price elsewhere
+    # on the page shouldn't get a label invented for it.
+    expected = menu_labels[1:]
+    seen = 0
+    for line in lines[price_idx + 1:]:
+        item = line.strip()
+        if not item:
+            continue
+        if seen < len(expected) and item.lower() == expected[seen].lower():
+            seen += 1
+            if seen == len(expected):
+                break
+    if seen < len(expected):
+        return markdown
+
+    fixed_lines = lines[:price_idx] + [menu_labels[0]] + lines[price_idx:]
+    return "\n".join(fixed_lines)
+
+
 def extract_event_fields(
     url: str, markdown: str, known_fields: dict[str, Any] | None = None
 ) -> dict[str, Any] | None:
@@ -579,6 +650,8 @@ def extract_event_fields(
     print(f"{datetime.now():%H:%M:%S} - extract_event_fields ({settings.llm_provider}): {url}")
     if not markdown.strip():
         return None
+
+    markdown = _fix_tab_widget_leading_price(markdown)
 
     known_fields = known_fields or {}
     schema_properties = {
