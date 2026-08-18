@@ -77,6 +77,15 @@ def run(
             query = query.limit(limit)
         organisers = list(session.scalars(query))
 
+    # See listing_crawler.crawl_listing's own docstring for why these two matter at all:
+    # every handler except _parkrun_handler's registrator-override path only ever
+    # discovers a URL list, letting the code below (the dry-run print loop / the
+    # urls_to_crawl = urls[:1] slice) apply the same "preview only"/"just one" effect
+    # generically - but that handler writes real event data inline, before this
+    # function ever gets a list back to slice, so it needs to be told directly instead.
+    dry_run = mode == "dry-run"
+    event_limit = 1 if mode == "sanity-check" else None
+
     for organiser in organisers:
         # Captured as a plain string *before* the risky block below, not read from the
         # ORM object inside except - see that clause's own comment for why.
@@ -84,7 +93,9 @@ def run(
         try:
             with session_scope() as session:
                 organiser = session.get(Organiser, organiser.id)
-                urls = listing_crawler.crawl_listing(session, organiser, force=force_refresh)
+                urls = listing_crawler.crawl_listing(
+                    session, organiser, force=force_refresh, dry_run=dry_run, event_limit=event_limit
+                )
                 label = "event URL(s) to refresh" if force_refresh else "new event URL(s)"
                 print(f"{organiser.name}: {len(urls)} {label}")
         except requests.exceptions.ConnectionError:

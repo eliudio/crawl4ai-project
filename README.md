@@ -7,6 +7,14 @@ The wiki for race events
 
 or plebbys.com or pleppys.com or plebies.com
 
+## Bug
+
+I think there's a bug in the parkrun handler: when we're a bot, not a human, we
+should respect the robots.txt file. Based on this, I think retrieving the json 
+file should not be possible, should it.
+
+Fix it, if this is true. Else tell me
+
 ## OpenStreetMap
 AI: Try using OpenStreetMap data + community layer as source of event data
 Using the Overpass API with targeted queries is the intended and accepted way to pull specific features such as 

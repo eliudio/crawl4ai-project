@@ -466,6 +466,104 @@ def test_registrator_refreshed_on_recrawl_not_stuck_at_creation_time_value(monke
 
 
 # ---------------------------------------------------------------------------
+# register_event_from_fields - the direct-from-source-data path (no robots check, no
+# scrape, no LLM call at all), used by listing_crawler.py's _parkrun_handler when its
+# own registrator override is active. See parkrun_feed.build_event_fields for what a
+# real fields dict looks like; this one is trimmed to just what matters per assertion.
+# ---------------------------------------------------------------------------
+
+_PARKRUN_FIELDS = {
+    "name": "Bushy parkrun", "summary": "Bushy parkrun", "summary_alt": "Bushy parkrun",
+    "summary_short": "Bushy parkrun", "sport": "running", "date_text": "Every Saturday, 9:00am",
+    "location": "Bushy Park, Teddington", "start_location": "Bushy Park, Teddington",
+    "finish_location": "Bushy Park, Teddington", "age_restriction_text": None,
+    "is_valid_event": True, "invalid_reason": None, "registration_status": "not_required",
+    "registration_text": None, "registration_opens_date_iso": None, "registration_opens_time_24h": None,
+    "registration_closes_date_iso": None, "registration_closes_time_24h": None,
+    "lifecycle_status": "scheduled", "lifecycle_text": None,
+    "distances": [{"distance_text": "5k", "price_text": "Free", "distance_category": "5k"}],
+    "occurrence": "weekly", "occurrence_weekdays": ["sat"], "occurrence_time": "09:00",
+    "occurrence_starts_on": "2026-08-18", "occurrence_ends_on": None, "occurrences": [],
+    "latitude": 51.410992, "longitude": -0.335791,
+}
+
+
+def test_register_event_from_fields_creates_event_with_no_scrape_or_llm_call(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor, "extract_event_fields",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call the LLM for a direct feed registration")),
+    )
+    monkeypatch.setattr(
+        event_crawler.scraper_client, "scrape",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not scrape for a direct feed registration")),
+    )
+    monkeypatch.setattr(
+        event_crawler.robots, "is_allowed",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not check robots.txt for a direct feed registration")),
+    )
+
+    event = event_crawler.register_event_from_fields(
+        session, organiser_id=1, event_url="https://www.parkrun.org.uk/bushy/",
+        fields=_PARKRUN_FIELDS, registrator="jane_doe",
+    )
+
+    assert event is not None
+    assert event.name == "Bushy parkrun"
+    assert event.summary_alt == "Bushy parkrun"
+    assert event.summary_short == "Bushy parkrun"
+    assert event.registrator == "jane_doe"
+    assert event.status == event_crawler.EventStatus.VALID
+    assert event.registration_status == event_crawler.RegistrationStatus.NOT_REQUIRED
+    assert event.occurrence == event_crawler.Occurrence.WEEKLY
+    assert event.occurrence_weekdays == ["sat"]
+    assert event.occurrence_starts_on == event_crawler.date(2026, 8, 18)
+    assert event.occurrence_ends_on is None
+    # The feed's own exact coordinates are used directly - not re-geocoded.
+    assert event.latitude == 51.410992
+    assert event.longitude == -0.335791
+    assert len(event.distances) == 1
+    assert event.distances[0].distance_text == "5k"
+    assert event.distances[0].price_text == "Free"
+    assert event.distances[0].registrator == "jane_doe"
+
+    run = session.query(CrawlRun).one()
+    assert run.status == event_crawler.CrawlStatus.SUCCESS
+    assert "registered directly from parkrun feed" in run.detail
+
+
+def test_register_event_from_fields_does_not_call_geocoding_client(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.geocoding_client, "geocode_event_location",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must use the feed's own coordinates, not geocode")),
+    )
+
+    event = event_crawler.register_event_from_fields(
+        session, organiser_id=1, event_url="https://www.parkrun.org.uk/bushy/",
+        fields=_PARKRUN_FIELDS, registrator="jane_doe",
+    )
+
+    assert event.latitude == 51.410992
+    assert event.longitude == -0.335791
+
+
+def test_register_event_from_fields_updates_existing_row_not_a_duplicate(session):
+    event_crawler.register_event_from_fields(
+        session, organiser_id=1, event_url="https://www.parkrun.org.uk/bushy/",
+        fields=_PARKRUN_FIELDS, registrator="bot",
+    )
+    updated_fields = {**_PARKRUN_FIELDS, "name": "Bushy parkrun (updated)"}
+
+    event = event_crawler.register_event_from_fields(
+        session, organiser_id=1, event_url="https://www.parkrun.org.uk/bushy/",
+        fields=updated_fields, registrator="jane_doe",
+    )
+
+    assert session.query(Event).count() == 1
+    assert event.name == "Bushy parkrun (updated)"
+    assert event.registrator == "jane_doe"
+
+
+# ---------------------------------------------------------------------------
 # occurrence/occurrence_weekdays/occurrence_time/starts_on/ends_on and
 # EventOccurrence rows - the repeating-events feature (see models.py's
 # Occurrence docstring for the two mechanisms these split into).

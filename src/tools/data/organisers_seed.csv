@@ -1,5 +1,5 @@
 name,listing_urls,homepage_url,discovered_via,sitemap_url,handler,handler_params,registrator
-parkrun UK,[],https://www.parkrun.org.uk/,manual,,parkrun,,bot
+parkrun UK,[],https://www.parkrun.org.uk/,manual,,parkrun,,johan
 RunThrough Events,"[""https://www.runthrough.co.uk/events-timeline""]",https://www.runthrough.co.uk/,findarace.com,https://www.runthrough.co.uk/sitemap.xml,,,bot
 Cancer Research UK - Race for Life,"[""https://raceforlife.cancerresearchuk.org/find-an-event?size=n_200_n&sort-field=eventDate""]",https://raceforlife.cancerresearchuk.org/,findarace.com,https://raceforlife.cancerresearchuk.org/sitemap.xml,,,bot
 Zig Zag Running,"[""https://www.zigzagrunning.co.uk/""]",https://www.zigzagrunning.co.uk/,findarace.com,https://www.zigzagrunning.co.uk/sitemap.xml,,,bot

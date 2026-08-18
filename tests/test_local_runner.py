@@ -66,7 +66,7 @@ def _stub_infra(monkeypatch, organisers):
 def _stub_new_urls(monkeypatch, urls_by_organiser: dict[int, list[str]]):
     monkeypatch.setattr(
         local_runner.listing_crawler, "crawl_listing",
-        lambda session, organiser, force=False: urls_by_organiser.get(organiser.id, []),
+        lambda session, organiser, force=False, dry_run=False, event_limit=None: urls_by_organiser.get(organiser.id, []),
     )
 
 
@@ -159,6 +159,54 @@ def test_default_mode_is_normal(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# mode -> dry_run/event_limit forwarded to crawl_listing itself, not just used to
+# slice/skip whatever it returns - see crawl_listing's own docstring for why: a
+# handler that writes real event data inline (_parkrun_handler's registrator-override
+# path) has no other way to find out about --mode sanity-check/dry-run at all, since
+# by the time it would return something for the code below to slice, it's too late -
+# the reported gap this fixes (a sanity-check run against parkrun with a registrator
+# override registered its entire 1,417-event feed instead of just one).
+# ---------------------------------------------------------------------------
+
+def _stub_crawl_listing_capture(monkeypatch):
+    captured = {}
+
+    def fake_crawl_listing(session, organiser, force=False, dry_run=False, event_limit=None):
+        captured[organiser.id] = {"dry_run": dry_run, "event_limit": event_limit}
+        return []
+
+    monkeypatch.setattr(local_runner.listing_crawler, "crawl_listing", fake_crawl_listing)
+    return captured
+
+
+def test_normal_mode_passes_no_dry_run_and_no_event_limit(monkeypatch):
+    captured = _stub_crawl_listing_capture(monkeypatch)
+    _stub_crawl_event(monkeypatch)
+
+    local_runner.run(mode="normal", organiser_id=1)
+
+    assert captured[1] == {"dry_run": False, "event_limit": None}
+
+
+def test_sanity_check_mode_passes_event_limit_one(monkeypatch):
+    captured = _stub_crawl_listing_capture(monkeypatch)
+    _stub_crawl_event(monkeypatch)
+
+    local_runner.run(mode="sanity-check", organiser_id=1)
+
+    assert captured[1] == {"dry_run": False, "event_limit": 1}
+
+
+def test_dry_run_mode_passes_dry_run_true(monkeypatch):
+    captured = _stub_crawl_listing_capture(monkeypatch)
+    _stub_crawl_event(monkeypatch)
+
+    local_runner.run(mode="dry-run", organiser_id=1)
+
+    assert captured[1] == {"dry_run": True, "event_limit": None}
+
+
+# ---------------------------------------------------------------------------
 # --force-refresh: re-crawl every event URL for an organiser (not just new
 # ones) and always re-extract - see the reported case, re-running the Three
 # Forts Challenge organiser after fixing the distance-stripping bug.
@@ -170,7 +218,7 @@ def test_force_refresh_threads_force_through_to_crawl_listing(monkeypatch):
     # reaches crawl_listing for whichever organisers run() does process.
     captured = {}
 
-    def fake_crawl_listing(session, organiser, force=False):
+    def fake_crawl_listing(session, organiser, force=False, dry_run=False, event_limit=None):
         captured[organiser.id] = force
         return []
 
@@ -185,7 +233,7 @@ def test_force_refresh_threads_force_through_to_crawl_listing(monkeypatch):
 def test_normal_run_does_not_force_crawl_listing(monkeypatch):
     captured = {}
 
-    def fake_crawl_listing(session, organiser, force=False):
+    def fake_crawl_listing(session, organiser, force=False, dry_run=False, event_limit=None):
         captured[organiser.id] = force
         return []
 
@@ -247,7 +295,7 @@ def test_normal_run_uses_hash_check_by_default(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_listing_crawl_failure_for_one_organiser_does_not_crash_the_run(monkeypatch, capsys):
-    def fake_crawl_listing(session, organiser, force=False):
+    def fake_crawl_listing(session, organiser, force=False, dry_run=False, event_limit=None):
         if organiser.id == 1:
             raise RuntimeError("DNS resolution failed for hostname \"limelightsportsgroup.com\"")
         return ["https://beta.example.com/event/d"]
@@ -271,7 +319,7 @@ def test_listing_crawl_connection_error_still_stops_the_whole_run(monkeypatch):
     # than uselessly retrying every remaining organiser one by one.
     import requests
 
-    def fake_crawl_listing(session, organiser, force=False):
+    def fake_crawl_listing(session, organiser, force=False, dry_run=False, event_limit=None):
         raise requests.exceptions.ConnectionError("no route to host")
 
     monkeypatch.setattr(local_runner.listing_crawler, "crawl_listing", fake_crawl_listing)

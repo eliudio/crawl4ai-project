@@ -51,7 +51,7 @@ import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from services import discovery_handlers, llm_extractor, parkrun_feed, robots, scraper_client, sitemap_crawler
+from services import discovery_handlers, event_crawler, llm_extractor, parkrun_feed, robots, scraper_client, sitemap_crawler
 from services.link_filters import filter_candidate_links
 from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event, Organiser
 
@@ -534,7 +534,10 @@ def _crawl_from_sitemap(session: Session, organiser: Organiser, sitemap_url: str
     return new_urls
 
 
-def default_handler(session: Session, organiser: Organiser, params: dict, force: bool = False) -> list[str]:
+def default_handler(
+    session: Session, organiser: Organiser, params: dict, force: bool = False,
+    dry_run: bool = False, event_limit: int | None = None,
+) -> list[str]:
     """
     The handler every organiser gets unless Organiser.handler names something else -
     registered under "default" below, looked up the same way as any other handler (see
@@ -543,6 +546,11 @@ def default_handler(session: Session, organiser: Organiser, params: dict, force:
     Prefers reading params["sitemap_url"] (see _crawl_from_sitemap) when present - only
     falls through to listing_urls/clicking-through when none is known, or the known one
     couldn't be resolved into anything.
+
+    dry_run/event_limit: unused - see discovery_handlers.DiscoveryHandler's own
+    docstring for why they exist at all. This handler only ever discovers a URL list,
+    never writes real event data itself, so the caller's own slicing/skip-crawling of
+    whatever it returns already gives the same effect.
     """
     sitemap_url = params.get("sitemap_url")
     if sitemap_url:
@@ -565,7 +573,10 @@ def default_handler(session: Session, organiser: Organiser, params: dict, force:
     return new_urls
 
 
-def _parkrun_handler(session: Session, organiser: Organiser, params: dict, force: bool = False) -> list[str]:
+def _parkrun_handler(
+    session: Session, organiser: Organiser, params: dict, force: bool = False,
+    dry_run: bool = False, event_limit: int | None = None,
+) -> list[str]:
     """
     Registered under "parkrun" below - events.json is a direct, structured, worldwide
     feed of every location (see parkrun_feed.py), cheaper and more reliable than
@@ -587,16 +598,84 @@ def _parkrun_handler(session: Session, organiser: Organiser, params: dict, force
     event_crawler.py's later per-event crawls of the URLs this run discovers see the
     same, already-resolved registrator too, without each of those separate calls having
     to know about this override mechanism themselves.
+
+    A non-"bot" registrator (the override above being active) also changes what this
+    function does with each URL, not just whether robots.txt applies to fetching the
+    feed itself: instead of returning URLs for the normal per-event crawl_event scrape,
+    it registers every event directly here from the feed's own data (see
+    event_crawler.register_event_from_fields/parkrun_feed.get_events) - which is exactly
+    why dry_run/event_limit matter here and nowhere else in this file: every other
+    handler only ever discovers a URL list and lets the caller (local_runner.py) decide
+    how many of those to actually crawl/whether to crawl them at all for --mode sanity-
+    check/dry-run, but THIS branch does its real DB writes right here, before ever
+    returning anything for that caller-side slicing to act on - confirmed in practice as
+    a real gap, not hypothetical: a plain --mode sanity-check run against parkrun with a
+    registrator override active registered its *entire* feed (1,417 events) in one go,
+    since there was nothing left in the returned list for the caller's own `urls[:1]` to
+    limit. event_limit slices the feature list before any registration happens at all;
+    dry_run skips register_event_from_fields entirely and returns the (limit-sliced) URLs
+    instead, so local_runner.py's own existing, unmodified "for url in urls: print(...)"
+    dry-run preview keeps working unchanged for this branch too - same contract every
+    other handler already satisfies, just reached a different way here.
+
+    Confirmed in practice why the registrator branch exists at all, not just an
+    optimisation: parkrun's own event pages return HTTP 403 for an unattended request
+    (its own anti-bot protection), so the normal scrape-and-extract path reliably
+    produces INVALID events for parkrun regardless of registrator - the "bot" path still
+    goes through it anyway (robots.txt being satisfied doesn't mean the site's own server
+    will actually serve the page), since only the registrator-override path is meant to
+    represent "we already have a direct, obtained reason to treat this source specially."
     """
     override = params.get("registrator")
     if override and organiser.registrator != override:
         organiser.registrator = override
         session.add(organiser)
+    # A falsy registrator (None/"") - e.g. a not-yet-flushed Organiser ORM instance,
+    # whose Python-side default= isn't applied until insert - must fail safe as "bot",
+    # same reasoning/same gotcha as robots.is_allowed's own falsy-registrator handling;
+    # never let it be mistaken for "the override is active".
+    registrator = organiser.registrator or "bot"
+    country_code = params.get("country_code", parkrun_feed.UK_COUNTRY_CODE)
 
-    event_urls = parkrun_feed.get_event_urls(
-        country_code=params.get("country_code", parkrun_feed.UK_COUNTRY_CODE),
-        registrator=organiser.registrator,
-    )
+    if registrator != "bot":
+        events = parkrun_feed.get_events(country_code=country_code, registrator=registrator)
+        if events is None:
+            print("DEBUG parkrun feed unusable this run")
+            return []
+        if event_limit is not None:
+            events = events[:event_limit]
+
+        if dry_run:
+            # No DB writes at all here - not even a CrawlRun - same "preview only,
+            # touch nothing" guarantee every other handler already gives dry-run
+            # for free (they never write real event data during listing at all);
+            # this is the one branch that otherwise would.
+            print(f"{organiser.name}: [dry-run] {len(events)} event(s) would be registered directly from parkrun feed (registrator={registrator!r})")
+            return [event_url for event_url, _fields in events]
+
+        run = CrawlRun(
+            run_type=CrawlRunType.LISTING,
+            target_url=parkrun_feed.EVENTS_JSON_URL,
+            organiser_id=organiser.id,
+            status=CrawlStatus.SUCCESS,
+            started_at=datetime.now(timezone.utc),
+        )
+        for event_url, fields in events:
+            event_crawler.register_event_from_fields(session, organiser.id, event_url, fields, registrator)
+        run.detail = f"{len(events)} event(s) registered directly from parkrun feed (registrator={registrator!r})"
+        run.finished_at = datetime.now(timezone.utc)
+        session.add(run)
+        # Printed directly here (not just left in run.detail/the crawl_runs table) -
+        # this is the one figure that actually matters, since the caller's own generic
+        # "N new event URL(s)" print (see local_runner.py) is always 0 for this branch
+        # by design (see this function's own docstring) and would otherwise read as
+        # "nothing happened" when N events were in fact just registered.
+        print(f"{organiser.name}: {run.detail}")
+        # Already fully processed above - nothing left for the normal per-event
+        # crawl_event step the caller would otherwise run on whatever this returns.
+        return []
+
+    event_urls = parkrun_feed.get_event_urls(country_code=country_code, registrator=registrator)
     if event_urls is None:
         print("DEBUG parkrun feed unusable this run")
         return []
@@ -621,7 +700,10 @@ discovery_handlers.register_handler("default", default_handler)
 discovery_handlers.register_handler("parkrun", _parkrun_handler)
 
 
-def crawl_listing(session: Session, organiser: Organiser, force: bool = False) -> list[str]:
+def crawl_listing(
+    session: Session, organiser: Organiser, force: bool = False,
+    dry_run: bool = False, event_limit: int | None = None,
+) -> list[str]:
     """
     Crawl one organiser's listing page(s), by dispatching to whichever handler
     Organiser.handler names (see discovery_handlers.py) - every organiser has exactly
@@ -635,6 +717,13 @@ def crawl_listing(session: Session, organiser: Organiser, force: bool = False) -
     local_runner.py's --force-refresh): the caller is expected to re-crawl each one
     with event_crawler.crawl_event(check_mode="force") so an already-stored URL gets
     replaced in place rather than skipped.
+
+    dry_run/event_limit: forwarded to whichever handler runs, as-is - see
+    discovery_handlers.DiscoveryHandler's own docstring for why they exist (only
+    meaningful for a handler that writes real event data inline, within this call,
+    like _parkrun_handler's registrator-override path - local_runner.py's own --mode
+    sanity-check/dry-run already gets the same effect on every other handler for free,
+    by slicing/skipping whatever this function returns).
     """
     handler = discovery_handlers.get_handler(organiser.handler)
     if handler is None:
@@ -643,4 +732,4 @@ def crawl_listing(session: Session, organiser: Organiser, force: bool = False) -
             f"handler {organiser.handler!r} - falling back to 'default'"
         )
         handler = discovery_handlers.get_handler("default")
-    return handler(session, organiser, organiser.handler_params or {}, force)
+    return handler(session, organiser, organiser.handler_params or {}, force, dry_run, event_limit)
