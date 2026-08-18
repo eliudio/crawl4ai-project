@@ -2,8 +2,10 @@
 
 ## name and slogan
 
-plebbys.com, plebys.com or pleppys.com  - For the plebs, by the plebs, for free, always
-The wiki for races
+plebys.com - For the plebs, by the plebs, for free, always 
+The wiki for race events
+
+or plebbys.com or pleppys.com or plebies.com
 
 ## OpenStreetMap
 AI: Try using OpenStreetMap data + community layer as source of event data
