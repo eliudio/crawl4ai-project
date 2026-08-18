@@ -235,3 +235,132 @@ def test_normal_run_uses_hash_check_by_default(monkeypatch):
     local_runner.run(organiser_id=1)
 
     assert calls.check_modes == ["hash-check"]
+
+
+# ---------------------------------------------------------------------------
+# One organiser's listing-crawl failure must cost only that organiser, not the
+# whole batch run - the reported incident: limelightsportsgroup.com's DNS no
+# longer resolves at all, so listing_crawler.crawl_listing() (crawl4ai AND
+# Firecrawl both exhausting their retries underneath it) raised all the way
+# out of run() uncaught, since - unlike the per-event loop just below it -
+# this listing-discovery step had no try/except of its own.
+# ---------------------------------------------------------------------------
+
+def test_listing_crawl_failure_for_one_organiser_does_not_crash_the_run(monkeypatch, capsys):
+    def fake_crawl_listing(session, organiser, force=False):
+        if organiser.id == 1:
+            raise RuntimeError("DNS resolution failed for hostname \"limelightsportsgroup.com\"")
+        return ["https://beta.example.com/event/d"]
+
+    monkeypatch.setattr(local_runner.listing_crawler, "crawl_listing", fake_crawl_listing)
+    calls = _stub_crawl_event(monkeypatch)
+
+    local_runner.run()  # must not raise
+
+    # Acme (organiser 1) never got as far as crawling any event...
+    assert calls == [(2, "https://beta.example.com/event/d")]
+    # ...but Beta (organiser 2), later in the same run, still got processed normally.
+    out = capsys.readouterr().out
+    assert "ERROR: Acme: listing crawl failed: RuntimeError:" in out
+
+
+def test_listing_crawl_connection_error_still_stops_the_whole_run(monkeypatch):
+    # Same policy the per-event loop already applies (see crawl_event's own comment):
+    # a real "can't reach Firecrawl/crawl4ai's backend at all" ConnectionError is a
+    # global problem, not a per-organiser one, and must still abort the run rather
+    # than uselessly retrying every remaining organiser one by one.
+    import requests
+
+    def fake_crawl_listing(session, organiser, force=False):
+        raise requests.exceptions.ConnectionError("no route to host")
+
+    monkeypatch.setattr(local_runner.listing_crawler, "crawl_listing", fake_crawl_listing)
+    _stub_crawl_event(monkeypatch)
+
+    with pytest.raises(requests.exceptions.ConnectionError):
+        local_runner.run()
+
+
+# ---------------------------------------------------------------------------
+# The except clause added above for the DNS-failure incident had its own bug,
+# caught on the very next real run: it read organiser.name from INSIDE the
+# except block. session_scope (db.py) rolls back on any exception, and
+# Session.rollback() expires every attribute of every object loaded in that
+# session - regardless of expire_on_commit=False, which only governs commit -
+# so `organiser` (re-fetched via session.get() inside the failed `with` block)
+# is both expired and detached (its session already closed) by the time the
+# except block runs. Touching organiser.name there tries to lazily refresh an
+# expired attribute against a session that no longer exists ->
+# DetachedInstanceError - a second real crash from the very fix meant to stop
+# the first one.
+#
+# test_listing_crawl_failure_for_one_organiser_does_not_crash_the_run above
+# could not have caught this: _FakeSession.get() just returns a plain,
+# never-attached Organiser straight out of a dict - it has no real
+# SQLAlchemy session lifecycle to expire/detach it, so organiser.name always
+# trivially works there regardless of whether the real code is correct. This
+# test instead exercises a *real* SQLAlchemy session going through the same
+# rollback+close sequence session_scope actually performs, against a
+# throwaway model (not the real Organiser - its Postgres-only ARRAY column
+# can't be created on SQLite, see test_export_events.py's own docstring on
+# this) that's otherwise shaped the same way for this purpose: an object
+# fetched inside a session, whose session then fails and rolls back.
+# ---------------------------------------------------------------------------
+
+def test_reading_an_attribute_after_session_scope_rollback_raises_detached_error():
+    from sqlalchemy import Column, Integer, String, create_engine
+    from sqlalchemy.orm import DeclarativeBase, sessionmaker
+    from sqlalchemy.orm.exc import DetachedInstanceError
+
+    class _Base(DeclarativeBase):
+        pass
+
+    class _Widget(_Base):
+        __tablename__ = "widgets"
+        id = Column(Integer, primary_key=True)
+        name = Column(String(50))
+
+    engine = create_engine("sqlite:///:memory:")
+    _Base.metadata.create_all(engine)
+    # expire_on_commit=False, matching db.py's real SessionLocal exactly - the point is
+    # that this flag does NOT save you from a rollback's own expiration, only a commit's.
+    real_session_local = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+
+    with real_session_local() as setup:
+        setup.add(_Widget(id=1, name="Acme"))
+        setup.commit()
+
+    # Mirrors db.py's session_scope exactly: yield, commit on success, rollback + close
+    # on any exception.
+    @contextmanager
+    def fake_session_scope():
+        session = real_session_local()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    widget_from_before = None
+    name_captured_before_the_risky_block = None
+    try:
+        with fake_session_scope() as session:
+            widget_from_before = session.get(_Widget, 1)
+            name_captured_before_the_risky_block = widget_from_before.name  # the fix's own technique
+            raise RuntimeError("simulated listing-crawl failure")
+    except RuntimeError:
+        pass
+
+    # This is the exact mistake the incident's fix made: touching the ORM object's
+    # attribute from the except block, after the failed `with` block already rolled
+    # back and closed its session.
+    with pytest.raises(DetachedInstanceError):
+        widget_from_before.name
+
+    # This is the actual fix: a plain value captured *before* the risky block, while
+    # the object was still safely attached, survives just fine afterwards - it's just
+    # a string by then, no session involved at all.
+    assert name_captured_before_the_risky_block == "Acme"

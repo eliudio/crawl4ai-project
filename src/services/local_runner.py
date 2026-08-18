@@ -78,11 +78,37 @@ def run(
         organisers = list(session.scalars(query))
 
     for organiser in organisers:
-        with session_scope() as session:
-            organiser = session.get(Organiser, organiser.id)
-            urls = listing_crawler.crawl_listing(session, organiser, force=force_refresh)
-            label = "event URL(s) to refresh" if force_refresh else "new event URL(s)"
-            print(f"{organiser.name}: {len(urls)} {label}")
+        # Captured as a plain string *before* the risky block below, not read from the
+        # ORM object inside except - see that clause's own comment for why.
+        organiser_name = organiser.name
+        try:
+            with session_scope() as session:
+                organiser = session.get(Organiser, organiser.id)
+                urls = listing_crawler.crawl_listing(session, organiser, force=force_refresh)
+                label = "event URL(s) to refresh" if force_refresh else "new event URL(s)"
+                print(f"{organiser.name}: {len(urls)} {label}")
+        except requests.exceptions.ConnectionError:
+            raise  # can't reach Firecrawl at all - stop the run, see crawl_event
+        except Exception as e:
+            # Same reasoning as the per-event except below (the run-frimley-2022 incident):
+            # one organiser's listing being unreachable (dead domain/DNS failure, site down,
+            # ...) must cost only this organiser, not the whole overnight batch run - confirmed
+            # in practice: limelightsportsgroup.com's DNS no longer resolving at all (crawl4ai
+            # AND Firecrawl both exhausted their retries) propagated all the way out of run()
+            # uncaught, since this listing-discovery step - unlike the per-event loop just
+            # below - had no try/except of its own.
+            #
+            # organiser_name (not organiser.name): session_scope's own except clause (see
+            # db.py) rolls back on any exception - and Session.rollback() *expires* every
+            # object loaded in that session (regardless of expire_on_commit=False, which
+            # only governs commit) - so by the time control reaches here, the `organiser`
+            # re-fetched inside the `with` block above is both expired and detached (its
+            # session is already closed). Touching organiser.name here would try to
+            # lazily refresh that expired attribute against a session that no longer
+            # exists, raising DetachedInstanceError - confirmed in practice, the first
+            # time this exact except clause actually fired for real.
+            print(f"  ERROR: {organiser_name}: listing crawl failed: {type(e).__name__}: {e}")
+            continue
 
         if mode == "dry-run":
             for url in urls:

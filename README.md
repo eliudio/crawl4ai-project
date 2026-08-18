@@ -1,5 +1,23 @@
 ﻿# TODOs
 
+## We need specific scrapers for specific events that are preseted differently. These need a specific
+   local script
+   Case 1: https://images.parkrun.com/events.json
+
+
+## An event can be repeating event
+   An example of this is https://www.atwevents.co.uk/e/open-water-swimming-at-merchant-taylors-school-8890
+   Some are specific dates, like https://www.atwevents.co.uk/e/open-water-swimming-at-merchant-taylors-school-8890
+   Others are weekly, like parkrun.co.uk 
+   monthy
+   Extend events table, and cater for this
+   In terms of scraping
+   
+
+## Introduce a server based database, google probably, cheap / free
+   Then also create some quick way to view events from that database, like the extract but then from that database
+   not generated static but dynamic 
+
 ## Include the weekly events / runs and club runs which might not be all that clear to scrape, like parkrun.co.uk
 
 ## Move the project to rompje.com
@@ -20,7 +38,6 @@ Ask AI to cleanup
 - create directories tools/export with export scripts
 - create directories models and move the models in there
 - mimick the same directory structure for unit tests
-5) 
 
 ## run on google
 
