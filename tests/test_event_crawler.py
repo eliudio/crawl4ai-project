@@ -399,6 +399,154 @@ def test_defaults_to_one_off_when_extraction_omits_occurrence(monkeypatch, sessi
     assert event.occurrence_time is None
 
 
+# ---------------------------------------------------------------------------
+# registration_status/registration_text/registration_opens_at/registration_closes_at -
+# see models.py's RegistrationStatus docstring: whether an event needs sign-up/entry at
+# all (parkrun doesn't), and if so, whether it's currently open - confirmed in practice
+# on zigzagrunning.co.uk's Two Hundred Miles Challenge, which states outright
+# "Registration is Closed" with no opening/closing date given at all.
+# ---------------------------------------------------------------------------
+
+def test_registration_closed_with_no_dates_stated(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Two Hundred Miles Challenge", "sport": "running", "distances": [],
+            "registration_status": "closed", "registration_text": "Registration is Closed",
+        },
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/200-miles")
+
+    assert event.registration_status == event_crawler.RegistrationStatus.CLOSED
+    assert event.registration_text == "Registration is Closed"
+    assert event.registration_opens_at is None
+    assert event.registration_closes_at is None
+
+
+def test_registration_open_with_dates_and_times_parsed_into_combined_datetime(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Some 10k", "sport": "running", "distances": [],
+            "registration_status": "open", "registration_text": "Entries open 1 March, close 30 June 2026 23:59",
+            "registration_opens_date_iso": "2026-03-01", "registration_opens_time_24h": "09:00",
+            "registration_closes_date_iso": "2026-06-30", "registration_closes_time_24h": "23:59",
+        },
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/some-10k")
+
+    assert event.registration_status == event_crawler.RegistrationStatus.OPEN
+    assert event.registration_opens_at == event_crawler.datetime(
+        2026, 3, 1, 9, 0, tzinfo=event_crawler.timezone.utc
+    )
+    assert event.registration_closes_at == event_crawler.datetime(
+        2026, 6, 30, 23, 59, tzinfo=event_crawler.timezone.utc
+    )
+
+
+def test_registration_date_without_time_defaults_to_midnight(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Some 10k", "sport": "running", "distances": [],
+            "registration_status": "open", "registration_opens_date_iso": "2026-03-01",
+        },
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/some-10k")
+
+    assert event.registration_opens_at == event_crawler.datetime(2026, 3, 1, 0, 0, tzinfo=event_crawler.timezone.utc)
+    assert event.registration_closes_at is None
+
+
+def test_not_required_registration(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Village parkrun", "sport": "running", "distances": [],
+            "registration_status": "not_required",
+        },
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/parkrun")
+
+    assert event.registration_status == event_crawler.RegistrationStatus.NOT_REQUIRED
+    assert event.registration_text is None
+    assert event.registration_opens_at is None
+    assert event.registration_closes_at is None
+
+
+def test_defaults_to_unknown_when_extraction_omits_registration_status(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {"name": "Plain Event", "sport": "running", "distances": []},
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/plain")
+
+    assert event.registration_status == event_crawler.RegistrationStatus.UNKNOWN
+    assert event.registration_opens_at is None
+    assert event.registration_closes_at is None
+
+
+# ---------------------------------------------------------------------------
+# lifecycle_status/lifecycle_text - see models.py's EventLifecycle docstring: whether the
+# event itself is still going ahead, deliberately independent of registration_status (an
+# event can be sold out and still on, or cancelled after entries were already closed).
+# ---------------------------------------------------------------------------
+
+def test_cancelled_event_lifecycle_fields_populated(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Storm-hit 10k", "sport": "running", "distances": [],
+            "lifecycle_status": "cancelled", "lifecycle_text": "Cancelled due to adverse weather",
+        },
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/storm-10k")
+
+    assert event.lifecycle_status == event_crawler.EventLifecycle.CANCELLED
+    assert event.lifecycle_text == "Cancelled due to adverse weather"
+
+
+def test_postponed_event_lifecycle_fields_populated(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Some 10k", "sport": "running", "distances": [],
+            "lifecycle_status": "postponed", "lifecycle_text": "Postponed to 12 September 2026",
+        },
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/some-10k")
+
+    assert event.lifecycle_status == event_crawler.EventLifecycle.POSTPONED
+    assert event.lifecycle_text == "Postponed to 12 September 2026"
+
+
+def test_defaults_to_scheduled_when_extraction_omits_lifecycle_status(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {"name": "Plain Event", "sport": "running", "distances": []},
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/plain")
+
+    assert event.lifecycle_status == event_crawler.EventLifecycle.SCHEDULED
+    assert event.lifecycle_text is None
+
+
 def test_specific_dates_create_event_occurrence_rows(monkeypatch, session):
     monkeypatch.setattr(
         event_crawler.llm_extractor,

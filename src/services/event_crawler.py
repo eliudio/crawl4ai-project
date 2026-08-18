@@ -22,9 +22,11 @@ from services.models import (
     CrawlStatus,
     Event,
     EventDistance,
+    EventLifecycle,
     EventOccurrence,
     EventStatus,
     Occurrence,
+    RegistrationStatus,
 )
 from services.race_types import get_or_create_race_type
 
@@ -217,6 +219,40 @@ def crawl_event(
         event.start_location = fields.get("start_location")
         event.finish_location = fields.get("finish_location")
         event.age_restriction_text = fields.get("age_restriction_text")
+        # See RegistrationStatus/llm_extractor's own registration_status docs.
+        # _normalize_registration_status in llm_extractor.py already guarantees a valid
+        # enum value, same pattern as occurrence below.
+        event.registration_status = RegistrationStatus(
+            fields.get("registration_status") or RegistrationStatus.UNKNOWN.value
+        )
+        event.registration_text = fields.get("registration_text")
+        registration_opens_date = _parse_iso_date(fields.get("registration_opens_date_iso"))
+        event.registration_opens_at = (
+            datetime.combine(
+                registration_opens_date,
+                _parse_24h_time(fields.get("registration_opens_time_24h")) or time(0, 0),
+                tzinfo=timezone.utc,
+            )
+            if registration_opens_date
+            else None
+        )
+        registration_closes_date = _parse_iso_date(fields.get("registration_closes_date_iso"))
+        event.registration_closes_at = (
+            datetime.combine(
+                registration_closes_date,
+                _parse_24h_time(fields.get("registration_closes_time_24h")) or time(0, 0),
+                tzinfo=timezone.utc,
+            )
+            if registration_closes_date
+            else None
+        )
+        # See EventLifecycle/llm_extractor's own lifecycle_status docs. Independent of
+        # registration_status above - a cancelled event doesn't imply anything about
+        # whether registration was open/closed, and vice versa.
+        event.lifecycle_status = EventLifecycle(
+            fields.get("lifecycle_status") or EventLifecycle.SCHEDULED.value
+        )
+        event.lifecycle_text = fields.get("lifecycle_text")
         # See EventStatus/llm_extractor's is_valid_event - a page that's just a redirect
         # notice, dead page, etc. is kept (not discarded) so it's visible for review, but
         # flagged rather than treated as a normal event with unusually empty fields.

@@ -103,6 +103,46 @@ class Occurrence(PyEnum):
     SPECIFIC_DATES = "specific_dates"
 
 
+class RegistrationStatus(PyEnum):
+    """
+    Whether taking part in this event needs sign-up/entry/a ticket at all, and if so,
+    whether that's currently open. Two independent facts folded into one enum rather than
+    a bool-plus-status pair, since "is registration open" is meaningless for an event that
+    never needed it in the first place - confirmed in practice: parkrun requires no
+    sign-up whatsoever (NOT_REQUIRED), vs. zigzagrunning.co.uk's Two Hundred Miles
+    Challenge, which states outright "Registration is Closed" (CLOSED) with no other
+    detail - not every event states this at all (UNKNOWN, the safe default - never assume
+    OPEN just because nothing was said).
+    """
+
+    NOT_REQUIRED = "not_required"
+    OPEN = "open"
+    CLOSED = "closed"
+    UNKNOWN = "unknown"
+
+
+class EventLifecycle(PyEnum):
+    """
+    Whether the event itself is still going ahead as planned - deliberately kept separate
+    from RegistrationStatus above: "entries closed" and "event cancelled" are independent
+    facts (an event can be sold out and still on, or cancelled after entries were already
+    closed) and collapsing them would make it impossible to tell "closed because full" from
+    "closed because called off" apart, or to express both at once. Also separate from
+    EventStatus (valid/invalid): a cancelled event's page is still a perfectly valid,
+    well-formed description of a (no-longer-happening) event, not a redirect/dead page.
+
+    Defaults to SCHEDULED - unlike RegistrationStatus's UNKNOWN default, silence here really
+    does mean "going ahead": organisers reliably announce a cancellation/postponement
+    prominently when it happens, rather than the reverse (needing to affirmatively state
+    "yes, still on" on every ordinary event page) - same reasoning as EventStatus defaulting
+    to VALID / Occurrence defaulting to ONE_OFF.
+    """
+
+    SCHEDULED = "scheduled"
+    CANCELLED = "cancelled"
+    POSTPONED = "postponed"
+
+
 class Sport(PyEnum):
     """
     Fixed, closed vocabulary for RaceType.sport - unlike Event.sport (free text,
@@ -203,6 +243,55 @@ class Event(Base):
     # straight from the LLM with no realistic length assumption (e.g. Frimley Health
     # Charity's "Run Frimley 2022" page has a 3-clause, 270+ char version of this).
     age_restriction_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # See RegistrationStatus - unlike occurrence/status below, this deliberately does NOT
+    # default to the "most common" value: whether entry is even required, let alone
+    # currently open, genuinely isn't stated on enough pages to assume one way or the
+    # other (unlike occurrence, where "one-off" really is the overwhelmingly common case).
+    # server_default (not just the Python-side default= below) so this NOT NULL column can
+    # still be added to an already-existing `events` table by db.py's _add_missing_columns -
+    # same reasoning as Event.occurrence's own server_default.
+    registration_status: Mapped[RegistrationStatus] = mapped_column(
+        Enum(
+            RegistrationStatus,
+            name="registration_status",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        default=RegistrationStatus.UNKNOWN,
+        server_default=RegistrationStatus.UNKNOWN.value,
+    )
+    # The page's own wording about registration/entry opening, closing, or current status,
+    # verbatim - same "never let a derived value replace the original" convention as
+    # date_text/age_restriction_text above. Confirmed in practice: zigzagrunning.co.uk's
+    # Two Hundred Miles Challenge states just "Registration is Closed", nothing else - there
+    # isn't always a date/time to parse out of this at all, so this raw fallback matters on
+    # its own, not just as a debugging aid alongside the two columns below.
+    registration_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Parsed date+time entries open/close, when the page actually states them (e.g. "Entries
+    # open 9am, 1 March 2026") - null whenever only a status/no detail at all was given, same
+    # spirit as EventOccurrence.starts_at (a single combined instant, not separate date/time
+    # columns, since - unlike Event.occurrence_time - there's no recurring weekday rule to
+    # combine it with here).
+    registration_opens_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    registration_closes_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # See EventLifecycle - defaults to SCHEDULED since (unlike registration_status above)
+    # silence really does mean "going ahead". server_default for the same
+    # _add_missing_columns auto-migration reasoning as registration_status/occurrence.
+    lifecycle_status: Mapped[EventLifecycle] = mapped_column(
+        Enum(
+            EventLifecycle,
+            name="event_lifecycle",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        default=EventLifecycle.SCHEDULED,
+        server_default=EventLifecycle.SCHEDULED.value,
+    )
+    # The page's own wording about a cancellation/postponement, verbatim - same rationale as
+    # registration_text: often a reason or a rescheduled date that doesn't reduce to a single
+    # structured field ("Cancelled due to adverse weather", "Postponed to 12 Sept 2026").
+    # Null whenever lifecycle_status is SCHEDULED.
+    lifecycle_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # See EventStatus - defaults to VALID since most crawled URLs really are events;
     # event_crawler.py sets this from the LLM's own is_valid_event/invalid_reason

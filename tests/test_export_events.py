@@ -19,7 +19,18 @@ from datetime import datetime, timezone
 
 import pytest
 
-from services.models import Event, EventDistance, EventOccurrence, EventStatus, Occurrence, Organiser, RaceType, Sport
+from services.models import (
+    Event,
+    EventDistance,
+    EventLifecycle,
+    EventOccurrence,
+    EventStatus,
+    Occurrence,
+    Organiser,
+    RaceType,
+    RegistrationStatus,
+    Sport,
+)
 from tools import export_events
 
 # Captured before any test's autouse fixture monkeypatches export_events._fetch_rows (see
@@ -268,6 +279,39 @@ def test_render_event_invalid_with_no_reason_shows_placeholder():
     assert '<tr><th>Invalid reason</th><td class="invalid-reason"><span class="empty">&mdash;</span></td></tr>' in rendered
 
 
+def test_render_event_scheduled_has_no_lifecycle_badge_or_row():
+    event = Event(
+        id=1, name="Real Event", sport="running", date_text=None, distances=[], raw_markdown=None,
+        status=EventStatus.VALID, lifecycle_status=EventLifecycle.SCHEDULED,
+    )
+    rendered = export_events._render_event(event)
+    assert "badge-cancelled" not in rendered
+    assert "badge-postponed" not in rendered
+    assert "Lifecycle detail" not in rendered
+
+
+def test_render_event_cancelled_shows_badge_and_detail():
+    event = Event(
+        id=1, name="Storm-hit 10k", sport="running", date_text=None, distances=[], raw_markdown=None,
+        status=EventStatus.VALID, lifecycle_status=EventLifecycle.CANCELLED,
+        lifecycle_text="Cancelled due to adverse weather",
+    )
+    rendered = export_events._render_event(event)
+    assert '<span class="badge badge-cancelled">CANCELLED</span>' in rendered
+    assert "Cancelled due to adverse weather" in rendered
+
+
+def test_render_event_postponed_shows_badge_and_detail():
+    event = Event(
+        id=1, name="Some 10k", sport="running", date_text=None, distances=[], raw_markdown=None,
+        status=EventStatus.VALID, lifecycle_status=EventLifecycle.POSTPONED,
+        lifecycle_text="Postponed to 12 September 2026",
+    )
+    rendered = export_events._render_event(event)
+    assert '<span class="badge badge-postponed">POSTPONED</span>' in rendered
+    assert "Postponed to 12 September 2026" in rendered
+
+
 # ---------------------------------------------------------------------------
 # _render_organiser / _render_sport - pluralisation and nesting
 # ---------------------------------------------------------------------------
@@ -427,6 +471,9 @@ def test_export_csv_includes_occurrence_and_coordinates(monkeypatch, tmp_path):
         sport="running", status=EventStatus.VALID, date_text="Every Saturday, 9:00am",
         occurrence=Occurrence.WEEKLY, occurrence_weekdays=["sat"],
         occurrence_time=None, occurrence_starts_on=None, occurrence_ends_on=None,
+        # parkrun is the canonical no-registration-needed case - see RegistrationStatus's
+        # own docstring.
+        registration_status=RegistrationStatus.NOT_REQUIRED,
         latitude=51.4118, longitude=-0.3277,
         location=None, raw_markdown=None, distances=[], occurrences=[],
     )
@@ -441,6 +488,77 @@ def test_export_csv_includes_occurrence_and_coordinates(monkeypatch, tmp_path):
     assert rows[0]["occurrence_weekdays"] == "sat"
     assert rows[0]["latitude"] == "51.4118"
     assert rows[0]["longitude"] == "-0.3277"
+    assert rows[0]["registration_status"] == "not_required"
+
+
+def test_export_csv_includes_registration_status_and_dates(monkeypatch, tmp_path):
+    # zigzagrunning.co.uk's Two Hundred Miles Challenge - states outright "Registration is
+    # Closed" with no opening/closing date given at all (see RegistrationStatus's own
+    # docstring for why 'unknown' rather than 'open' is the safe default when nothing's said,
+    # in contrast to this - a page that DOES say something, just not a date).
+    closed_event = Event(
+        id=6, organiser_id=1, url="https://www.zigzagrunning.co.uk/event-details/two-hundred-miles-challenge",
+        name="Two Hundred Miles Challenge", sport="running", status=EventStatus.VALID,
+        registration_status=RegistrationStatus.CLOSED, registration_text="Registration is Closed",
+        registration_opens_at=None, registration_closes_at=None,
+        location=None, raw_markdown=None, distances=[], occurrences=[],
+    )
+    open_event = Event(
+        id=7, organiser_id=1, url="https://example.org/event/some-10k",
+        name="Some 10k", sport="running", status=EventStatus.VALID,
+        registration_status=RegistrationStatus.OPEN,
+        registration_text="Entries open 1 March, close 30 June 2026 23:59",
+        registration_opens_at=datetime(2026, 3, 1, 9, 0, tzinfo=timezone.utc),
+        registration_closes_at=datetime(2026, 6, 30, 23, 59, tzinfo=timezone.utc),
+        location=None, raw_markdown=None, distances=[], occurrences=[],
+    )
+    monkeypatch.setattr(
+        export_events, "_fetch_rows",
+        lambda session, organiser_id=None, status=None: [(closed_event, "ZigZag Running"), (open_event, "Acme Runners")],
+    )
+
+    export_events.export_csv(tmp_path / "registration.csv")
+
+    with (tmp_path / "registration.csv").open(encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+
+    assert rows[0]["registration_status"] == "closed"
+    assert rows[0]["registration_text"] == "Registration is Closed"
+    assert rows[0]["registration_opens_at"] == ""
+    assert rows[0]["registration_closes_at"] == ""
+
+    assert rows[1]["registration_status"] == "open"
+    assert rows[1]["registration_opens_at"] == str(datetime(2026, 3, 1, 9, 0, tzinfo=timezone.utc))
+    assert rows[1]["registration_closes_at"] == str(datetime(2026, 6, 30, 23, 59, tzinfo=timezone.utc))
+
+
+def test_export_csv_includes_lifecycle_status_and_text(monkeypatch, tmp_path):
+    cancelled_event = Event(
+        id=8, organiser_id=1, url="https://example.org/event/storm-10k",
+        name="Storm-hit 10k", sport="running", status=EventStatus.VALID,
+        lifecycle_status=EventLifecycle.CANCELLED, lifecycle_text="Cancelled due to adverse weather",
+        location=None, raw_markdown=None, distances=[], occurrences=[],
+    )
+    scheduled_event = Event(
+        id=9, organiser_id=1, url="https://example.org/event/some-10k",
+        name="Some 10k", sport="running", status=EventStatus.VALID,
+        lifecycle_status=EventLifecycle.SCHEDULED, lifecycle_text=None,
+        location=None, raw_markdown=None, distances=[], occurrences=[],
+    )
+    monkeypatch.setattr(
+        export_events, "_fetch_rows",
+        lambda session, organiser_id=None, status=None: [(cancelled_event, "Acme Runners"), (scheduled_event, "Acme Runners")],
+    )
+
+    export_events.export_csv(tmp_path / "lifecycle.csv")
+
+    with (tmp_path / "lifecycle.csv").open(encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+
+    assert rows[0]["lifecycle_status"] == "cancelled"
+    assert rows[0]["lifecycle_text"] == "Cancelled due to adverse weather"
+    assert rows[1]["lifecycle_status"] == "scheduled"
+    assert rows[1]["lifecycle_text"] == ""
 
 
 def test_export_csv_includes_invalid_event_status_and_reason(monkeypatch, tmp_path):

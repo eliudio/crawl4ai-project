@@ -40,7 +40,12 @@ _EVENT_SCHEMA_PROPERTIES: dict[str, Any] = {
             "IS genuine event content to read, even if some individual fields below end up "
             "null because the page simply doesn't state them - a real event page missing "
             "its price or age restriction is still a valid event, this is about whether the "
-            "page describes an event AT ALL, not about how complete it is.\n"
+            "page describes an event AT ALL, not about how complete it is. True also for a "
+            "cancelled or postponed event (see lifecycle_status below) - a page announcing "
+            "'This event has been cancelled' is still a genuine, well-formed description of "
+            "a real event, just one that isn't happening; it is NOT the same situation as a "
+            "redirect/dead page with no event content at all. Never set this False just "
+            "because the event was called off.\n"
             "If false: still answer 'name'/'sport' with your best minimal, honest label "
             "(e.g. name 'No event details available', sport 'other') rather than leaving "
             "them unanswered - but never invent a plausible-sounding date/location/price "
@@ -206,8 +211,83 @@ _EVENT_SCHEMA_PROPERTIES: dict[str, Any] = {
             "'one_off'/'specific_dates'."
         ),
     },
+    "registration_status": {
+        "type": "string",
+        "enum": ["not_required", "open", "closed", "unknown"],
+        "description": (
+            "Whether taking part needs sign-up/entry/a ticket at all, and if so, whether "
+            "that's currently open. 'not_required': no entry of any kind is needed - "
+            "confirmed in practice: parkrun, just turn up. 'open': the page states entries "
+            "are open, or is a future event with nothing suggesting otherwise. 'closed': "
+            "the page states entries/registration have closed or sold out - confirmed in "
+            "practice: zigzagrunning.co.uk's Two Hundred Miles Challenge page states "
+            "outright 'Registration is Closed', with no other detail given at all. "
+            "'unknown': entry is clearly needed but the page never actually states whether "
+            "it's open or closed right now - the safe default, never guess 'open' just "
+            "because nothing was said."
+        ),
+    },
+    "registration_text": {
+        "type": ["string", "null"],
+        "description": (
+            "The page's own wording about registration/entry opening, closing, or current "
+            "status, exactly as written (e.g. 'Registration is Closed', 'Entries open 9am "
+            "1 March 2026'). Null whenever registration_status is 'not_required', or "
+            "nothing at all is stated about it."
+        ),
+    },
+    "registration_opens_date_iso": {
+        "type": ["string", "null"],
+        "description": (
+            "The date entries/registration open, ISO YYYY-MM-DD, if explicitly stated - "
+            "using the year implied by the page's own context if none is given. Null if "
+            "not stated."
+        ),
+    },
+    "registration_opens_time_24h": {
+        "type": ["string", "null"],
+        "description": "The time entries/registration open, 24h HH:MM, if stated separately from the date. Null if no time was stated - never guess/default one.",
+    },
+    "registration_closes_date_iso": {
+        "type": ["string", "null"],
+        "description": (
+            "The date entries/registration close, ISO YYYY-MM-DD, if explicitly stated - "
+            "using the year implied by the page's own context if none is given. Null if "
+            "not stated."
+        ),
+    },
+    "registration_closes_time_24h": {
+        "type": ["string", "null"],
+        "description": "The time entries/registration close, 24h HH:MM, if stated separately from the date. Null if no time was stated - never guess/default one.",
+    },
+    "lifecycle_status": {
+        "type": "string",
+        "enum": ["scheduled", "cancelled", "postponed"],
+        "description": (
+            "Whether the event itself is still going ahead as planned - separate from "
+            "registration_status above (an event can be sold out and still on, or cancelled "
+            "after entries were already closed - these are independent facts, don't infer "
+            "one from the other). 'scheduled' (the default/most common case): nothing on the "
+            "page suggests otherwise. 'cancelled': the page states the event has been called "
+            "off/cancelled. 'postponed': the page states the event has been moved to a later "
+            "date (a plain date change with no cancellation mentioned - if the page instead "
+            "just states an updated/corrected date with no mention of an earlier cancelled "
+            "one, that's just this event's real date, use 'scheduled' and date_text as "
+            "normal, not 'postponed')."
+        ),
+    },
+    "lifecycle_text": {
+        "type": ["string", "null"],
+        "description": (
+            "The page's own wording about a cancellation/postponement, exactly as written "
+            "(e.g. 'Cancelled due to adverse weather', 'Postponed to 12 September 2026'). "
+            "Null whenever lifecycle_status is 'scheduled'."
+        ),
+    },
 }
-_EVENT_REQUIRED = ["name", "sport", "is_valid_event", "occurrence"]
+_EVENT_REQUIRED = [
+    "name", "sport", "is_valid_event", "occurrence", "registration_status", "lifecycle_status",
+]
 
 _EVENT_SYSTEM_PROMPT = (
     "You are a precise sports event data extractor. Extract only what is "
@@ -525,6 +605,20 @@ def _call_local(system_prompt: str, user_prompt: str, max_tokens: int) -> dict[s
     response_format), so a small/quantized model can still occasionally return
     malformed or off-schema JSON - callers already tolerate that via the same
     try/except every other provider goes through in extract_event_fields et al.
+
+    num_ctx: explicit, not left at Ollama's own runtime default - confirmed in practice
+    to matter, not just theoretical: extract_event_fields's own schema (every field's
+    full description, dumped as literal JSON text into the prompt - see
+    _build_user_prompt) is now ~4000 tokens on its own after the occurrence/
+    registration/lifecycle fields piled up, and Ollama's runtime default num_ctx is
+    smaller than that regardless of a model's own much larger supported context length
+    (qwen2.5:7b supports 32768) - silently truncating/starving the model of context for
+    it, not a prompt-wording problem. Reproduced directly: test_real_event_page_extracts_
+    sane_fields (a trivial, previously-reliable 2-distance fixture) started coming back
+    with an empty `distances` array, twice in a row, purely from the schema having grown -
+    nothing about that test's own markdown or assertions changed. 8192 comfortably covers
+    today's schema + a real event page's markdown + generation, with headroom to keep
+    growing before this has to be revisited.
     """
     import ollama
 
@@ -536,7 +630,7 @@ def _call_local(system_prompt: str, user_prompt: str, max_tokens: int) -> dict[s
             {"role": "user", "content": user_prompt},
         ],
         format="json",
-        options={"temperature": 0.0, "num_predict": max_tokens},
+        options={"temperature": 0.0, "num_predict": max_tokens, "num_ctx": 8192},
     )
     return json.loads(response["message"]["content"])
 
@@ -688,6 +782,7 @@ def extract_event_fields(
         not in (
             "distances", "is_valid_event", "invalid_reason",
             "occurrence", "occurrences", "occurrence_weekdays",
+            "registration_status", "lifecycle_status",
         )
     }
     result["distances"] = _normalize_distances(fields.get("distances"))
@@ -701,6 +796,8 @@ def extract_event_fields(
     result["occurrence"] = _normalize_occurrence(fields.get("occurrence"))
     result["occurrences"] = _normalize_occurrences(fields.get("occurrences"))
     result["occurrence_weekdays"] = _normalize_occurrence_weekdays(fields.get("occurrence_weekdays"))
+    result["registration_status"] = _normalize_registration_status(fields.get("registration_status"))
+    result["lifecycle_status"] = _normalize_lifecycle_status(fields.get("lifecycle_status"))
 
     trusted_known_fields = dict(known_fields)
     if result["occurrence"] != "one_off" and "date_text" in trusted_known_fields:
@@ -748,6 +845,32 @@ def _normalize_occurrence(raw: Any) -> str:
     if isinstance(raw, str) and raw.strip().lower() in _VALID_OCCURRENCE_VALUES:
         return raw.strip().lower()
     return "one_off"
+
+
+_VALID_REGISTRATION_STATUS_VALUES = {"not_required", "open", "closed", "unknown"}
+
+
+def _normalize_registration_status(raw: Any) -> str:
+    """Falls back to 'unknown' on anything malformed/unexpected - same reasoning as
+    _normalize_occurrence's own 'one_off' fallback, but 'unknown' rather than the most
+    common value: unlike occurrence, there IS no safe "most events are like this" default
+    to fall back on here (see RegistrationStatus's own docstring)."""
+    if isinstance(raw, str) and raw.strip().lower() in _VALID_REGISTRATION_STATUS_VALUES:
+        return raw.strip().lower()
+    return "unknown"
+
+
+_VALID_LIFECYCLE_STATUS_VALUES = {"scheduled", "cancelled", "postponed"}
+
+
+def _normalize_lifecycle_status(raw: Any) -> str:
+    """Falls back to 'scheduled' on anything malformed/unexpected - same reasoning as
+    _normalize_occurrence's own 'one_off' fallback: unlike registration_status, silence/a
+    malformed response here really does mean "going ahead" (see EventLifecycle's own
+    docstring), so 'scheduled' is a safe default, not just a placeholder."""
+    if isinstance(raw, str) and raw.strip().lower() in _VALID_LIFECYCLE_STATUS_VALUES:
+        return raw.strip().lower()
+    return "scheduled"
 
 
 def _normalize_occurrence_weekdays(raw: Any) -> list[str]:

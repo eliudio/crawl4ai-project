@@ -39,7 +39,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from services.db import session_scope
-from services.models import Event, EventDistance, EventOccurrence, EventStatus, Organiser
+from services.models import Event, EventDistance, EventLifecycle, EventOccurrence, EventStatus, Organiser
 
 DEFAULT_OUTPUT = {
     "csv": Path("c:/temp/crawl4ai/events/events_export.csv"),
@@ -73,6 +73,12 @@ CSV_FIELDNAMES = [
     "longitude",
     "distances",
     "age_restriction_text",
+    "registration_status",
+    "registration_text",
+    "registration_opens_at",
+    "registration_closes_at",
+    "lifecycle_status",
+    "lifecycle_text",
     "url",
     "summary",
     "summary_alt",
@@ -84,8 +90,11 @@ CSV_FIELDNAMES = [
 
 # Fields shown in the HTML event detail tree, in display order. Distances/occurrences are
 # rendered separately (see _render_distances/_render_occurrences) since they're lists, not
-# a single scalar value. Status is rendered separately too (see _render_event's INVALID
-# badge) rather than appearing as a plain row here.
+# a single scalar value. Status/lifecycle_status are rendered separately too (see
+# _render_event's INVALID/CANCELLED/POSTPONED badges and their own conditional detail
+# rows) rather than appearing as plain rows here - lifecycle_text follows invalid_reason's
+# own "only shown when there's actually something to say" pattern, not registration_text's
+# "always shown" one, since SCHEDULED (the overwhelmingly common case) never has one.
 DETAIL_FIELDS = [
     ("Organiser ID", "organiser_id"),
     ("Sport", "sport"),
@@ -99,6 +108,10 @@ DETAIL_FIELDS = [
     ("Start location", "start_location"),
     ("Finish location", "finish_location"),
     ("Age restriction", "age_restriction_text"),
+    ("Registration", "registration_status"),
+    ("Registration detail", "registration_text"),
+    ("Registration opens", "registration_opens_at"),
+    ("Registration closes", "registration_closes_at"),
     ("Original summary", "summary"),
     ("Alternative summary", "summary_alt"),
     ("Summary of summary", "summary_short"),
@@ -188,6 +201,12 @@ def export_csv(output_path: Path, organiser_id: int | None = None) -> int:
                     "longitude": event.longitude,
                     "distances": _distances_summary(event),
                     "age_restriction_text": event.age_restriction_text,
+                    "registration_status": event.registration_status.value if event.registration_status else None,
+                    "registration_text": event.registration_text,
+                    "registration_opens_at": event.registration_opens_at,
+                    "registration_closes_at": event.registration_closes_at,
+                    "lifecycle_status": event.lifecycle_status.value if event.lifecycle_status else None,
+                    "lifecycle_text": event.lifecycle_text,
                     "url": event.url,
                     "summary": event.summary,
                     "summary_alt": event.summary_alt,
@@ -313,6 +332,10 @@ def _render_event(event: Event, organiser_name: str | None = None) -> str:
     )
     if event.status == EventStatus.INVALID:
         badges += '<span class="badge badge-invalid">INVALID</span>'
+    if event.lifecycle_status == EventLifecycle.CANCELLED:
+        badges += '<span class="badge badge-cancelled">CANCELLED</span>'
+    elif event.lifecycle_status == EventLifecycle.POSTPONED:
+        badges += '<span class="badge badge-postponed">POSTPONED</span>'
 
     rows = []
     if organiser_name is not None:
@@ -320,6 +343,9 @@ def _render_event(event: Event, organiser_name: str | None = None) -> str:
     if event.status == EventStatus.INVALID:
         reason_html = html.escape(event.invalid_reason) if event.invalid_reason else '<span class="empty">&mdash;</span>'
         rows.append(f'<tr><th>Invalid reason</th><td class="invalid-reason">{reason_html}</td></tr>')
+    if event.lifecycle_status != EventLifecycle.SCHEDULED:
+        lifecycle_html = html.escape(event.lifecycle_text) if event.lifecycle_text else '<span class="empty">&mdash;</span>'
+        rows.append(f'<tr><th>Lifecycle detail</th><td class="lifecycle-detail">{lifecycle_html}</td></tr>')
     for label, attr in DETAIL_FIELDS:
         value = getattr(event, attr)
         value_html = html.escape(_format_detail_value(value)) if value else '<span class="empty">&mdash;</span>'
@@ -462,6 +488,9 @@ _CSS = """
   }
   .badge-invalid { background: #fde2e2; color: #c81e1e; }
   .invalid-reason { color: #c81e1e; }
+  .badge-cancelled { background: #fde2e2; color: #c81e1e; }
+  .badge-postponed { background: #fdf1d6; color: #96660a; }
+  .lifecycle-detail { color: #c81e1e; }
 
   .event-body { margin-top: 0.6rem; }
   table.fields { width: 100%; border-collapse: collapse; margin-bottom: 0.8rem; }
@@ -576,6 +605,9 @@ _CSS = """
     .badge { background: #22314f; }
     .badge-invalid { background: #4a1f1f; color: #ff8a8a; }
     .invalid-reason { color: #ff8a8a; }
+    .badge-cancelled { background: #4a1f1f; color: #ff8a8a; }
+    .badge-postponed { background: #4a3a1f; color: #f0c674; }
+    .lifecycle-detail { color: #ff8a8a; }
   }
 """
 

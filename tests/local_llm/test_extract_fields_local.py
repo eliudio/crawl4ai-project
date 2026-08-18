@@ -36,6 +36,41 @@ We are redirecting you to https://example.com/new-location. Continue to
 https://example.com/new-location.
 """
 
+_CANCELLED_EVENT_MARKDOWN = """
+# Riverside 10K
+
+**THIS EVENT HAS BEEN CANCELLED**
+
+Due to unprecedented flooding along the riverside course, the organisers have
+taken the difficult decision to cancel this year's Riverside 10K, originally
+due to take place on Sunday 14th June 2026. We're sorry for any disappointment
+this causes and hope to see you next year.
+
+## Distances
+
+- 10k - £20
+"""
+
+# Real, unedited raw_markdown scraped from zigzagrunning.co.uk/event-details/two-hundred-
+# miles-challenge - the reported case for RegistrationStatus: states outright "Registration
+# is Closed", with no opening/closing date given anywhere on the page at all.
+_ZIGZAG_CLOSED_REGISTRATION_MARKDOWN = """
+top of page
+Log In
+# TWO HUNDRED MILES CHALLENGE
+Sat 01 Aug
+www.evententry.com
+Whether its a Walk, Jog, Jeff or a Sprint, its the equivalent of just over 10k a day every day in August or completing or 16 Half marathons or about 8 marathons, are you up to the challenge ?
+Registration is Closed
+[See other events](https://www.zigzagrunning.co.uk)
+## Time & Location
+01 Aug 2020, 00:00 – 31 Aug 2020, 23:59
+www.evententry.com
+## Share This Event
+Event Info: Events
+bottom of page
+"""
+
 # Real (trimmed) structure from runthrough.co.uk/event/southampton-running-festival-
 # august-2027 - confirmed in practice to misattribute every price by one: the site's
 # distance-tab widget shows the default-selected tab's (5K's) price with no distance
@@ -109,6 +144,37 @@ def test_tab_widget_leading_price_matches_first_menu_distance_not_shifted():
     assert "30" in (price_of("10k") or "")
     assert "36" in (price_of("half marathon") or "")
     assert "10" in (price_of("junior") or "")
+
+
+def test_closed_registration_with_no_dates_stated():
+    fields = llm_extractor.extract_event_fields(
+        "https://www.zigzagrunning.co.uk/event-details/two-hundred-miles-challenge",
+        _ZIGZAG_CLOSED_REGISTRATION_MARKDOWN,
+    )
+
+    assert fields is not None
+    assert fields["is_valid_event"] is True
+    assert fields["registration_status"] == "closed"
+    assert "closed" in (fields["registration_text"] or "").lower()
+    # No opening/closing date is stated anywhere on the page - must not be invented.
+    assert fields["registration_opens_date_iso"] is None
+    assert fields["registration_closes_date_iso"] is None
+
+
+def test_cancelled_event_lifecycle_status():
+    fields = llm_extractor.extract_event_fields(
+        "https://example.com/event/riverside-10k", _CANCELLED_EVENT_MARKDOWN
+    )
+
+    assert fields is not None
+    # Still a real, valid event description, just one that isn't happening -
+    # a cancellation notice must not be conflated with is_valid_event/EventStatus.
+    assert fields["is_valid_event"] is True
+    assert fields["lifecycle_status"] == "cancelled"
+    # Not asserting exact wording (e.g. "flood") - a smaller model may paraphrase/summarise
+    # rather than quote verbatim, same tolerance as this file's other assertions. What must
+    # hold is that SOME explanation was actually captured, not left null.
+    assert (fields["lifecycle_text"] or "").strip()
 
 
 def test_redirect_page_flagged_invalid_not_mined_for_fake_details():

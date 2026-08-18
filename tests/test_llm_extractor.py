@@ -36,6 +36,14 @@ _FULL_LLM_RESPONSE = {
     "occurrence_time": None,
     "occurrence_starts_on": None,
     "occurrence_ends_on": None,
+    "registration_status": "unknown",
+    "registration_text": None,
+    "registration_opens_date_iso": None,
+    "registration_opens_time_24h": None,
+    "registration_closes_date_iso": None,
+    "registration_closes_time_24h": None,
+    "lifecycle_status": "scheduled",
+    "lifecycle_text": None,
 }
 
 
@@ -45,7 +53,9 @@ def test_no_known_fields_asks_llm_for_everything(monkeypatch):
 
     result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
 
-    assert set(capture["required"]) == {"name", "sport", "is_valid_event", "occurrence"}
+    assert set(capture["required"]) == {
+        "name", "sport", "is_valid_event", "occurrence", "registration_status", "lifecycle_status",
+    }
     assert "name" in capture["schema_properties"]
     assert "sport" in capture["schema_properties"]
     assert result["name"] == "Should never be used"
@@ -67,11 +77,12 @@ def test_known_fields_removed_from_schema_and_required(monkeypatch):
         assert key not in capture["required"]
     assert "date_text" in capture["schema_properties"]
     assert "date_text" not in capture["required"]  # never was required in the first place
-    # distances/is_valid_event/invalid_reason/occurrence* have no schema.org equivalent - always asked.
+    # distances/is_valid_event/invalid_reason/occurrence*/registration_*/lifecycle_* have no
+    # schema.org equivalent - always asked.
     assert "distances" in capture["schema_properties"]
     assert "is_valid_event" in capture["schema_properties"]
     assert "occurrence" in capture["schema_properties"]
-    assert set(capture["required"]) == {"is_valid_event", "occurrence"}
+    assert set(capture["required"]) == {"is_valid_event", "occurrence", "registration_status", "lifecycle_status"}
 
 
 def test_known_fields_win_in_the_final_merged_result(monkeypatch):
@@ -188,6 +199,109 @@ def test_occurrences_malformed_response_becomes_empty_list(monkeypatch):
     result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
 
     assert result["occurrences"] == []
+
+
+# ---------------------------------------------------------------------------
+# registration_status/registration_text/registration_opens_*/registration_closes_* -
+# see the reported case: zigzagrunning.co.uk's Two Hundred Miles Challenge page
+# states outright "Registration is Closed", no opening/closing date given at all.
+# ---------------------------------------------------------------------------
+
+def test_registration_closed_passes_through_raw_text(monkeypatch):
+    _patch_run_llm(monkeypatch, {
+        **_FULL_LLM_RESPONSE,
+        "registration_status": "closed", "registration_text": "Registration is Closed",
+    })
+
+    result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
+
+    assert result["registration_status"] == "closed"
+    assert result["registration_text"] == "Registration is Closed"
+    assert result["registration_opens_date_iso"] is None
+    assert result["registration_closes_date_iso"] is None
+
+
+def test_registration_status_invalid_value_falls_back_to_unknown(monkeypatch):
+    _patch_run_llm(monkeypatch, {**_FULL_LLM_RESPONSE, "registration_status": "sold_out"})
+
+    result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
+
+    assert result["registration_status"] == "unknown"
+
+
+def test_registration_status_missing_from_response_falls_back_to_unknown(monkeypatch):
+    response = dict(_FULL_LLM_RESPONSE)
+    del response["registration_status"]
+    _patch_run_llm(monkeypatch, response)
+
+    result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
+
+    assert result["registration_status"] == "unknown"
+
+
+def test_registration_open_dates_pass_through(monkeypatch):
+    _patch_run_llm(monkeypatch, {
+        **_FULL_LLM_RESPONSE,
+        "registration_status": "open",
+        "registration_opens_date_iso": "2026-03-01", "registration_opens_time_24h": "09:00",
+        "registration_closes_date_iso": "2026-06-30", "registration_closes_time_24h": "23:59",
+    })
+
+    result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
+
+    assert result["registration_status"] == "open"
+    assert result["registration_opens_date_iso"] == "2026-03-01"
+    assert result["registration_opens_time_24h"] == "09:00"
+    assert result["registration_closes_date_iso"] == "2026-06-30"
+    assert result["registration_closes_time_24h"] == "23:59"
+
+
+# ---------------------------------------------------------------------------
+# lifecycle_status/lifecycle_text - deliberately independent of registration_status
+# (see EventLifecycle's own docstring): a cancelled event doesn't imply anything about
+# whether registration was open/closed, and vice versa.
+# ---------------------------------------------------------------------------
+
+def test_lifecycle_cancelled_passes_through_raw_text(monkeypatch):
+    _patch_run_llm(monkeypatch, {
+        **_FULL_LLM_RESPONSE,
+        "lifecycle_status": "cancelled", "lifecycle_text": "Cancelled due to adverse weather",
+    })
+
+    result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
+
+    assert result["lifecycle_status"] == "cancelled"
+    assert result["lifecycle_text"] == "Cancelled due to adverse weather"
+
+
+def test_lifecycle_postponed_passes_through_raw_text(monkeypatch):
+    _patch_run_llm(monkeypatch, {
+        **_FULL_LLM_RESPONSE,
+        "lifecycle_status": "postponed", "lifecycle_text": "Postponed to 12 September 2026",
+    })
+
+    result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
+
+    assert result["lifecycle_status"] == "postponed"
+    assert result["lifecycle_text"] == "Postponed to 12 September 2026"
+
+
+def test_lifecycle_status_invalid_value_falls_back_to_scheduled(monkeypatch):
+    _patch_run_llm(monkeypatch, {**_FULL_LLM_RESPONSE, "lifecycle_status": "delayed"})
+
+    result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
+
+    assert result["lifecycle_status"] == "scheduled"
+
+
+def test_lifecycle_status_missing_from_response_falls_back_to_scheduled(monkeypatch):
+    response = dict(_FULL_LLM_RESPONSE)
+    del response["lifecycle_status"]
+    _patch_run_llm(monkeypatch, response)
+
+    result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
+
+    assert result["lifecycle_status"] == "scheduled"
 
 
 def test_known_fields_mentioned_in_the_prompt_sent_to_the_llm(monkeypatch):

@@ -2,23 +2,167 @@
 
 ## name and slogan
 
-pleppys.com
-For the plebs, by the plebs, for free, always
+plebbys.com, plebys.com or pleppys.com  - For the plebs, by the plebs, for free, always
+The wiki for races
 
-## An event can have some extra fields:
-   - subscription opening and closing date and time
+## OpenStreetMap
+AI: Try using OpenStreetMap data + community layer as source of event data
+Using the Overpass API with targeted queries is the intended and accepted way to pull specific features such as 
+network=parkrun or operator=Parkrun.
 
-   extend the events table and cater for this 
+What would the result be if I do so today, now?
+
+Don't change anything, just answer to see if OSM has properly populated some events and if this is a source 
+for querying. Just brainstorming.
+
+## bug
+It seems some events have no location, yet the location is given. For example, the location for
+https://www.zigzagrunning.co.uk/event-details/two-hundred-miles-challenge is determined to be www.evententry.com
+That makes no sense. Perhaps this is the best we can do, if we don't want to spend too much. But perhaps this is 
+an easy fix, basically we want events where no location exists to be : unknown location
+
+## add a reporter field to the events, event_distances, event_occurrences and organisers
+
+## add history
+
+Here is the concrete schema extension that matches how Wikipedia, Wikidata and OpenStreetMap actually operate.
+1. Minimal users table (required foundation)
+```
+SQLCREATE TABLE users (
+  id            serial PRIMARY KEY,
+  -- whatever identity fields you already use (email, username, etc.)
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+```
+
+2. Attribution + versioning columns on the crowd-maintained tables
+
+We need to keep history of people reporting stuff.
+
+Add these columns to organisers, events and event_occurrences:
+
+```
+SQL-- on organisers (you already have created_at / updated_at)
+ALTER TABLE organisers
+  ADD COLUMN created_by   integer REFERENCES users(id),
+  ADD COLUMN updated_by   integer REFERENCES users(id),
+  ADD COLUMN version      integer NOT NULL DEFAULT 1,
+  ADD COLUMN deleted_at   timestamptz,
+  ADD COLUMN deleted_by   integer REFERENCES users(id);
+
+-- on events
+ALTER TABLE events
+  ADD COLUMN created_by   integer REFERENCES users(id),
+  ADD COLUMN created_at   timestamptz NOT NULL DEFAULT now(),
+  ADD COLUMN updated_by   integer REFERENCES users(id),
+  ADD COLUMN updated_at   timestamptz NOT NULL DEFAULT now(),
+  ADD COLUMN version      integer NOT NULL DEFAULT 1,
+  ADD COLUMN deleted_at   timestamptz,
+  ADD COLUMN deleted_by   integer REFERENCES users(id);
+
+-- on event_occurrences
+ALTER TABLE event_occurrences
+  ADD COLUMN created_by   integer REFERENCES users(id),
+  ADD COLUMN created_at   timestamptz NOT NULL DEFAULT now(),
+  ADD COLUMN updated_by   integer REFERENCES users(id),
+  ADD COLUMN updated_at   timestamptz NOT NULL DEFAULT now(),
+  ADD COLUMN version      integer NOT NULL DEFAULT 1,
+  ADD COLUMN deleted_at   timestamptz,
+  ADD COLUMN deleted_by   integer REFERENCES users(id);
+```
+version is incremented on every successful write and is used for optimistic concurrency. Soft-delete is done by setting deleted_at / deleted_by rather than hard-deleting the row.
+
+3. Central contribution log (the history that makes mass-revert possible)
+```
+SQLCREATE TABLE contributions (
+  id              bigserial PRIMARY KEY,
+  entity_type     text NOT NULL,               -- 'organiser' | 'event' | 'event_occurrence'
+  entity_id       integer NOT NULL,
+  user_id         integer REFERENCES users(id),
+  action          text NOT NULL,               -- 'create' | 'update' | 'delete' | 'restore' | 'mass_revert'
+  version         integer NOT NULL,            -- the version this contribution produced
+  comment         text,                        -- edit summary
+  changes         jsonb,                       -- before/after or field-level diff
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX contributions_entity_idx
+  ON contributions (entity_type, entity_id, created_at DESC);
+
+CREATE INDEX contributions_user_idx
+  ON contributions (user_id, created_at DESC);
+```
+Every create, update or soft-delete of an organiser, event or occurrence writes one row here. The live row always reflects the latest version; the contribution table holds the complete ordered history.
+
+4. Optional but useful: changesets (grouping related edits)
+When a user edits an organiser together with its events and occurrences in one session, group them:
+```
+SQLCREATE TABLE changesets (
+  id              bigserial PRIMARY KEY,
+  user_id         integer NOT NULL REFERENCES users(id),
+  comment         text,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  closed_at       timestamptz
+);
+
+ALTER TABLE contributions
+  ADD COLUMN changeset_id bigint REFERENCES changesets(id);
+```
+
+5. How mass-revert of one user works with this schema
+
+* Query contributions for every row where user_id = X, ordered by created_at DESC.
+* For each distinct (entity_type, entity_id) that the user touched, locate the contribution that immediately preceded their first change (or the last good version before their consecutive edits).
+* Restore the live row to that earlier state, increment its version, set updated_by to the admin performing the revert, and write a new contribution with action = 'restore' (or 'mass_revert') and a clear comment.
+* The original malicious contributions stay in the table forever; they are simply no longer the current version of the entity.
+
+This is exactly the pattern used by MediaWiki (revision history + rollback) and OpenStreetMap (versioned objects + changeset reverts): the live data is restored, the full provenance remains, and a single user’s damage can be undone cleanly while preserving everyone else’s work.
+
+## parkrun robots.txt doesn't allow automated populating of data
+AI: 
+1) add to the orgainsers_seed.csv: add a field registrator and populate this field with "bot" across the board
+2) pass this entry registrator to the handler as an argument. Use it in the handler when creating 
+an entry in events, event_distances, event_occurrences and organisers
+3) if the registrator is "bot" then the handler must check robots.txt and all handlers should respect it, in this case, 
+i.e when registrator is "bot". If not, then skip checking robots.txt. So this is the case for the parkrun handler as
+well as all other handlers
+4) the parkrun handler should have a configurable parameter to override registrator it uses. The parkrun handler 
+should override the registrator before anything else, i.e. before the logic if or if not robots.txt needs to be respected
+
+Devs:
+We must run the parkrun handler / seeding with the configurable parameter of the registrator to be some human, not "bot"
+This to force ignoring robots.txt and to have an actual user being the responsible for registering the event.
+Hence we do not want to run this seed script too often, so that changes on the site aren't automatically populated
+and the scraping isn't detected
+
+## APP: event creation
+We will want to be able to easily create, through the interface of the app weekly events
+to cater for easy registration of parkrun events.
+maybe even have some wizard to register races, one of these wizard is supporting parkrun
+
+## parkrun cancellations
+   Unless  parkrun.com/robots.txt doesn't allow this, which is the case, so skip this for now 
+
+   https://images.parkrun.com/events.json
+   has an entry "countries". This has a list of all url's for each country, e.g. https://www.parkrun.org.uk
+   If you append cancellations to these url's you get for each country the cancelled events
+   This is in the language of the country, the format of this page is 
+   - Date in that language, e.g.  lørdag den 22. august 2026
+     and then a list of locations, e.g. https://www.parkrun.dk/holbaekfaelled/ and https://www.parkrun.dk/lyngby/
+
+   Support this, i.e. when processing parkrun, make sure to flag the cancelled events in the database as 
+   cancelled and uncancel the ones that perhaps were cancelled before.
+   Unless  parkrun.com/robots.txt doesn't allow this, which is the case, so skip this for now 
+
+## question
+   parkrun question: what happens when we re-run parkrun? We need to somehow verify if the events in the json correspond to the
+   entries in the database. Do we do so?
 
 ## Introduce a server based database, google probably, cheap / free
    Then also create some quick way to view events from that database, like the extract but then from that database
    not generated static but dynamic 
 
-## Include the weekly events / runs and club runs which might not be all that clear to scrape, like parkrun.co.uk
-
 ## Move the project to rompje.com
-
-## Change the name of the project to eyeonrace.com ?
 
 ## code cleanup
 
@@ -42,8 +186,6 @@ I have started this as a google project and local_runner
 Then I have iterated over it, running local_runner
 Now that local_runner works, I want to verify how it can be run on google
 Did we make change on local_runner that need to be applied for google.
-
-
 
 # llm consoles
 
@@ -164,12 +306,14 @@ docker exec -it events-db psql -U postgres -d postgres -c "CREATE DATABASE event
 ```
 
 4.2 Describe all table
+```
 docker exec -it events-db psql -U postgres -d events -c "
 SELECT table_name, column_name, data_type, is_nullable
 FROM information_schema.columns
 WHERE table_schema = 'public'
 ORDER BY table_name, ordinal_position;
 "
+```
 
 5. run service
 ```

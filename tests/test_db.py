@@ -181,6 +181,78 @@ def test_regression_repeating_events_columns_and_table_added_to_preexisting_db()
     assert "event_occurrences" in inspect(engine).get_table_names()
 
 
+def test_regression_registration_columns_added_and_backfilled_on_preexisting_table():
+    # Same incident class again, for the registration-status feature: registration_status
+    # is NOT NULL with only a Python-side default= (same shape Event.occurrence needed a
+    # server_default for above) - an `events` table that predates it must gain it (and its
+    # sibling nullable columns) with existing rows backfilled to 'unknown', not break.
+    engine = _make_engine()
+
+    new_columns = {
+        "registration_status", "registration_text",
+        "registration_opens_at", "registration_closes_at",
+    }
+    pre_existing_metadata = MetaData()
+    old_columns = [
+        Column(c.name, c.type, nullable=c.nullable)
+        # lifecycle_status is also NOT NULL with no server_default carried over by this
+        # reconstruction (see below) - excluded here too so this test's own INSERT (which
+        # predates the registration feature, not just lifecycle) doesn't trip over it.
+        for c in Event.__table__.columns
+        if c.name not in new_columns and c.name not in ("lifecycle_status", "lifecycle_text")
+    ]
+    Table("events", pre_existing_metadata, *old_columns)
+    pre_existing_metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO events (id, organiser_id, url, status, occurrence, first_seen_at, last_seen_at) "
+            "VALUES (1, 1, 'https://example.org/event/pre-existing', 'valid', 'one_off', "
+            "'2026-01-01T00:00:00', '2026-01-01T00:00:00')"
+        )
+    assert not new_columns & {c["name"] for c in inspect(engine).get_columns("events")}
+
+    db._add_missing_columns(engine)
+
+    columns = {c["name"] for c in inspect(engine).get_columns("events")}
+    assert new_columns <= columns
+    with engine.connect() as conn:
+        status = conn.exec_driver_sql("SELECT registration_status FROM events WHERE id = 1").scalar()
+    assert status == "unknown"
+
+
+def test_regression_lifecycle_columns_added_and_backfilled_on_preexisting_table():
+    # Same incident class again, for the lifecycle-status feature (cancelled/postponed):
+    # lifecycle_status is NOT NULL with only a Python-side default= - an `events` table that
+    # predates it must gain it (and its sibling nullable column) with existing rows
+    # backfilled to 'scheduled', not break.
+    engine = _make_engine()
+
+    new_columns = {"lifecycle_status", "lifecycle_text"}
+    pre_existing_metadata = MetaData()
+    old_columns = [
+        Column(c.name, c.type, nullable=c.nullable)
+        for c in Event.__table__.columns
+        if c.name not in new_columns
+    ]
+    Table("events", pre_existing_metadata, *old_columns)
+    pre_existing_metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO events (id, organiser_id, url, status, occurrence, registration_status, "
+            "first_seen_at, last_seen_at) VALUES (1, 1, 'https://example.org/event/pre-existing', "
+            "'valid', 'one_off', 'unknown', '2026-01-01T00:00:00', '2026-01-01T00:00:00')"
+        )
+    assert not new_columns & {c["name"] for c in inspect(engine).get_columns("events")}
+
+    db._add_missing_columns(engine)
+
+    columns = {c["name"] for c in inspect(engine).get_columns("events")}
+    assert new_columns <= columns
+    with engine.connect() as conn:
+        status = conn.exec_driver_sql("SELECT lifecycle_status FROM events WHERE id = 1").scalar()
+    assert status == "scheduled"
+
+
 def test_regression_organiser_handler_added_and_backfilled_on_preexisting_table():
     # Same incident class again, for Organiser.handler specifically: it's NOT NULL
     # with only a Python-side default= (same shape Event.occurrence needed a
