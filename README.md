@@ -255,6 +255,92 @@ prototype code elsewhere in `src/`:
 - `Dockerfile` / `requirements.txt` — minimal container for Cloud Run,
   deliberately independent of the repo-root `pyproject.toml`.
 
+### Worked example: parkrun listing-crawl dispatch (`registrator` "bot" vs a real person)
+
+`listing_crawler.crawl_listing()`'s whole job is to answer *"what needs doing?"*
+cheaply and quickly (one request, no LLM) - completely separately from *"do it,"*
+which then gets fanned out as independent Pub/Sub messages (`main.py`'s
+`/tasks/listing-crawl` handler, below), each independently retryable and
+parallelizable across Cloud Run instances. That split exists because stage 2 (scrape a
+page + run an LLM extraction) is the slow, costly, per-page-failure-prone part, and a
+typical organiser can have dozens to hundreds of events - a single inline loop inside
+one HTTP handler invocation can't give that independent retry/parallelism, and would
+risk blowing past any sane request timeout.
+
+`_parkrun_handler` (`Organiser.handler == "parkrun"`) is the one handler where this
+genuinely differs depending on `Organiser.registrator` - see `Organiser.registrator`'s
+own docstring in `models.py` for what that field means (`"bot"`: an unattended
+automated crawl, always respecting robots.txt; anything else names a real person who
+has separately, directly obtained the site owner's own permission to collect the
+data). Worked through step by step, for organiser 1 (parkrun UK):
+
+**`registrator == "bot"`** (the default - an unattended automated crawl):
+
+1. A Pub/Sub message triggers `POST /tasks/listing-crawl` with `organiser_id=1`.
+2. `main.py` loads the organiser, calls `listing_crawler.crawl_listing(session, organiser)`.
+3. `crawl_listing()` looks up `organiser.handler` (`"parkrun"`) in
+   `discovery_handlers`, dispatches to `_parkrun_handler`.
+4. Since `registrator == "bot"`, `_parkrun_handler` calls
+   `parkrun_feed.get_event_urls(...)` - this checks robots.txt for real, fetches
+   `events.json`, and constructs each event's URL from `base_url + eventname + "/"`.
+5. `_filter_new_urls` drops any URL already in the `events` table, keeping only
+   genuinely new ones.
+6. That filtered list is returned all the way back up to `main.py`.
+7. `main.py` loops over it: `for url in new_urls: pubsub_client.publish_event_crawl(organiser_id, url)`
+   - **one Pub/Sub message per URL**.
+8. Each of those messages, independently and later (possibly in parallel, possibly on
+   a different Cloud Run instance), triggers its own `POST /tasks/event-crawl`, which
+   calls `event_crawler.crawl_event(session, organiser_id, event_url)` - the real
+   scrape + LLM extraction, per event.
+
+**`registrator != "bot"`** (a real person's name, e.g. `"johan"` - the override active):
+
+Steps 1-3 are identical. From there:
+
+4. `_parkrun_handler` calls `parkrun_feed.get_events(...)` instead of
+   `get_event_urls`. robots.txt is skipped entirely this time
+   (`robots.is_allowed()` returns `True` immediately for a non-`"bot"` registrator,
+   never even fetching robots.txt) - and for each feature it builds the *whole* fields
+   dict (`build_event_fields`: name, location, exact coordinates, distance, the
+   standing weekly schedule, everything), not just a bare URL.
+5. No dedup step - `_filter_new_urls` is never called in this branch. Every feature
+   from the feed is processed every time this runs, new or already-existing
+   (`register_event_from_fields` is an upsert, not insert-only).
+6. For each `(event_url, fields)` pair, `event_crawler.register_event_from_fields(...)`
+   is called **immediately, inline** - writing the real `Event`/`EventDistance` rows
+   using only the JSON data. No scrape, no LLM call, no per-page robots.txt check,
+   because there's no per-page fetch at all.
+7. One `CrawlRun` row + one console line get logged directly from inside
+   `_parkrun_handler` itself (e.g. *"parkrun UK: 1417 event(s) registered directly
+   from parkrun feed (registrator='johan')"*) - printed right here specifically
+   because the generic "enqueued N event(s)" line in step 10 is always 0 for this
+   branch and would otherwise read as "nothing happened."
+8. `_parkrun_handler` returns `[]` - not "nothing found," but "nothing left to
+   dispatch," since everything already got done in step 6.
+9. Back in `main.py`, the publish loop (`for url in new_urls: pubsub_client.publish_event_crawl(...)`)
+   runs **zero times** - no `event-crawl` messages get published for any of these
+   events. Steps 7-8 from the `"bot"` case (dispatch, then separately trigger
+   `/tasks/event-crawl`) never happen at all.
+10. `main.py`'s own final print (`enqueued {len(new_urls)} event(s)`) reports
+    "enqueued 0 event(s)" for the same reason `local_runner.py`'s own generic "0 new
+    event URL(s)" line does - it's honestly answering "how many are left to dispatch
+    separately," which is correctly zero; step 7 above is what actually carries the
+    real count.
+
+**`registrator != "bot"` is a deliberate exception to the fan-out design, not a
+shortcut around it**: it's the one handler where there genuinely is no stage 2 to fan
+out, because `events.json` already contains everything needed to build every `Event`
+in one shot. Every other handler (and parkrun's own `"bot"` path) keeps the two-stage
+split because their stage 2 is real, separate, per-page work that needs the
+independent retry/parallelism dispatching it as N messages provides.
+
+**Production has no sanity-check-equivalent lever yet**: `main.py` never passes
+`dry_run`/`event_limit` to `crawl_listing()` at all - only `local_runner.py`'s `--mode
+sanity-check`/`--mode dry-run` compute and pass those (see `local_runner.py`'s own
+`run()`). A real listing-crawl Pub/Sub message against parkrun with the override
+active always processes the *entire* current feed for real, every time it fires,
+until/unless that gets added to `main.py` too.
+
 ### Running locally
 
 #### setup locally
