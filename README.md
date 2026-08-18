@@ -4,15 +4,18 @@
    local script
    Case 1: https://images.parkrun.com/events.json
 
+## An event can have a subscription opening and closing date and time 
 
 ## An event can be repeating event
    An example of this is https://www.atwevents.co.uk/e/open-water-swimming-at-merchant-taylors-school-8890
    Some are specific dates, like https://www.atwevents.co.uk/e/open-water-swimming-at-merchant-taylors-school-8890
    Others are weekly, like parkrun.co.uk 
-   monthy
-   Extend events table, and cater for this
+   Extend events table, and cater for this, i.e.
+   Add event field "repeat-event" true/false
+   Add "repeat-type" daily, weekly, monthly, yearly and specific_dates
+   Add a sub table / structure (inner table if possible, else extermal table) for event-specific-dates
+   This event-specific-dates should include date and time
    In terms of scraping
-   
 
 ## Introduce a server based database, google probably, cheap / free
    Then also create some quick way to view events from that database, like the extract but then from that database
