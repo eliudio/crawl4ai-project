@@ -20,13 +20,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from services import event_crawler
-from services.models import CrawlRun, Event, EventDistance, RaceType
+from services.models import CrawlRun, Event, EventDistance, EventOccurrence, RaceType
 
 
 @pytest.fixture
 def session():
     engine = create_engine("sqlite:///:memory:")
-    for table in (Event.__table__, CrawlRun.__table__, EventDistance.__table__, RaceType.__table__):
+    for table in (Event.__table__, CrawlRun.__table__, EventDistance.__table__, EventOccurrence.__table__, RaceType.__table__):
         table.metadata.create_all(engine, tables=[table])
     with Session(engine) as session:
         yield session
@@ -56,6 +56,12 @@ def _stub_pipeline(monkeypatch):
     monkeypatch.setattr(
         event_crawler.llm_extractor, "rewrite_summary",
         lambda summary: {"summary_alt": None, "summary_short": None},
+    )
+    # crawl_event calls this unconditionally too - stubbed here for the same reason, so no
+    # test in this file makes a real, unmocked call out to Nominatim.
+    monkeypatch.setattr(
+        event_crawler.geocoding_client, "geocode_event_location",
+        lambda location, start_location, finish_location: None,
     )
 
 
@@ -349,3 +355,158 @@ def test_robots_disallowed_event_is_logged_clearly(monkeypatch, session, capsys)
     run = session.query(CrawlRun).one()
     assert run.status == event_crawler.CrawlStatus.SKIPPED
     assert run.detail == "disallowed by robots.txt"
+
+
+# ---------------------------------------------------------------------------
+# occurrence/occurrence_weekdays/occurrence_time/starts_on/ends_on and
+# EventOccurrence rows - the repeating-events feature (see models.py's
+# Occurrence docstring for the two mechanisms these split into).
+# ---------------------------------------------------------------------------
+
+def test_unbounded_recurrence_fields_populated_from_extraction(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Village parkrun", "sport": "running", "distances": [],
+            "occurrence": "weekly", "occurrences": [],
+            "occurrence_weekdays": ["sat"], "occurrence_time": "09:00",
+            "occurrence_starts_on": "2026-04-05", "occurrence_ends_on": "2026-09-30",
+        },
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/parkrun")
+
+    assert event.occurrence == event_crawler.Occurrence.WEEKLY
+    assert event.occurrence_weekdays == ["sat"]
+    assert event.occurrence_time == event_crawler.time(9, 0)
+    assert event.occurrence_starts_on == event_crawler.date(2026, 4, 5)
+    assert event.occurrence_ends_on == event_crawler.date(2026, 9, 30)
+    assert event.occurrences == []
+
+
+def test_defaults_to_one_off_when_extraction_omits_occurrence(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {"name": "Plain Event", "sport": "running", "distances": []},
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/plain")
+
+    assert event.occurrence == event_crawler.Occurrence.ONE_OFF
+    assert event.occurrence_weekdays is None
+    assert event.occurrence_time is None
+
+
+def test_specific_dates_create_event_occurrence_rows(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Swim Sessions", "sport": "swimming", "distances": [],
+            "occurrence": "specific_dates",
+            "occurrences": [
+                {"date_text": "18th Aug 2026", "date_iso": "2026-08-18", "time_text": "06:00 PM", "time_24h": "18:00", "price_text": "£10.00"},
+                {"date_text": "20th Aug 2026", "date_iso": "2026-08-20", "time_text": None, "time_24h": None, "price_text": None},
+            ],
+        },
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/swim")
+
+    assert len(event.occurrences) == 2
+    first, second = event.occurrences
+    assert first.starts_at == event_crawler.datetime(2026, 8, 18, 18, 0, tzinfo=event_crawler.timezone.utc)
+    assert first.date_text == "18th Aug 2026"
+    assert first.price_text == "£10.00"
+    # No time stated for this one - midnight is a parsing placeholder, not a claim the
+    # event actually starts at midnight.
+    assert second.starts_at == event_crawler.datetime(2026, 8, 20, 0, 0, tzinfo=event_crawler.timezone.utc)
+    assert second.price_text is None
+
+
+def test_occurrence_with_unparseable_date_iso_is_skipped_not_crashed(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Swim Sessions", "sport": "swimming", "distances": [],
+            "occurrence": "specific_dates",
+            "occurrences": [{"date_text": "some date", "date_iso": "not-a-real-date"}],
+        },
+    )
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/swim2")
+
+    assert event is not None
+    assert event.occurrences == []
+
+
+def test_reextraction_replaces_occurrences_not_appends(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Swim Sessions", "sport": "swimming", "distances": [],
+            "occurrence": "specific_dates",
+            "occurrences": [{"date_text": "18th Aug 2026", "date_iso": "2026-08-18"}],
+        },
+    )
+    event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/swim3", check_mode="force")
+
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Swim Sessions", "sport": "swimming", "distances": [],
+            "occurrence": "specific_dates",
+            "occurrences": [{"date_text": "25th Aug 2026", "date_iso": "2026-08-25"}],
+        },
+    )
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/swim3", check_mode="force")
+
+    assert len(event.occurrences) == 1
+    assert event.occurrences[0].date_text == "25th Aug 2026"
+
+
+# ---------------------------------------------------------------------------
+# Geocoding - see geocoding_client.py. Called once per crawl, result cached
+# on the row, priority order matches export_events.py's own _render_map.
+# ---------------------------------------------------------------------------
+
+def test_geocoding_populates_latitude_and_longitude(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {
+            "name": "Real Event", "sport": "running", "distances": [], "location": "Baiter Park, Poole",
+        },
+    )
+    captured = {}
+
+    def fake_geocode(location, start_location, finish_location):
+        captured["args"] = (location, start_location, finish_location)
+        return (50.7, -1.98)
+
+    monkeypatch.setattr(event_crawler.geocoding_client, "geocode_event_location", fake_geocode)
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/geo")
+
+    assert captured["args"] == ("Baiter Park, Poole", None, None)
+    assert event.latitude == 50.7
+    assert event.longitude == -1.98
+
+
+def test_geocoding_failure_leaves_lat_lon_unset(monkeypatch, session):
+    monkeypatch.setattr(
+        event_crawler.llm_extractor,
+        "extract_event_fields",
+        lambda url, markdown, known_fields=None: {"name": "Real Event", "sport": "running", "distances": []},
+    )
+    monkeypatch.setattr(event_crawler.geocoding_client, "geocode_event_location", lambda *a, **kw: None)
+
+    event = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/geo2")
+
+    assert event.latitude is None
+    assert event.longitude is None

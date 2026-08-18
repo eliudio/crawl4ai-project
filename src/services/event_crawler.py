@@ -8,20 +8,49 @@ organiser cheap.
 """
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 
 import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from services import llm_extractor, robots, scraper_client, structured_data
+from services import geocoding_client, llm_extractor, robots, scraper_client, structured_data
 from services.config import settings
-from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event, EventDistance, EventStatus
+from services.models import (
+    CrawlRun,
+    CrawlRunType,
+    CrawlStatus,
+    Event,
+    EventDistance,
+    EventOccurrence,
+    EventStatus,
+    Occurrence,
+)
 from services.race_types import get_or_create_race_type
 
 
 def _hash(markdown: str) -> str:
     return hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+
+
+def _parse_iso_date(value: str | None) -> date | None:
+    """Best-effort only - a malformed/unparseable ISO date must not fail the whole
+    crawl, just leave the field null (same spirit as every other extraction step here)."""
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
+def _parse_24h_time(value: str | None) -> time | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value.strip(), "%H:%M").time()
+    except ValueError:
+        return None
 
 
 # Confirmed dead - the page itself says so, not just "the scraper/LLM couldn't make
@@ -213,6 +242,46 @@ def crawl_event(
                     race_type=race_type,
                 )
             )
+        # See models.py's Occurrence docstring for the two mechanisms this splits into.
+        # _normalize_occurrence in llm_extractor.py already guarantees a valid enum value.
+        event.occurrence = Occurrence(fields.get("occurrence") or Occurrence.ONE_OFF.value)
+        event.occurrence_weekdays = fields.get("occurrence_weekdays") or None
+        event.occurrence_time = _parse_24h_time(fields.get("occurrence_time"))
+        event.occurrence_starts_on = _parse_iso_date(fields.get("occurrence_starts_on"))
+        event.occurrence_ends_on = _parse_iso_date(fields.get("occurrence_ends_on"))
+
+        # Same re-extraction reasoning as distances above: replace the whole set rather
+        # than match old vs. new one-to-one - see EventOccurrence's own docstring for why
+        # a platform-native external_ticket_id (when captured) is a better re-crawl key
+        # than this delete-and-reinsert approach, not yet wired in as a source field here.
+        event.occurrences.clear()
+        for i, o in enumerate(fields.get("occurrences") or []):
+            occurrence_date = _parse_iso_date(o.get("date_iso"))
+            if occurrence_date is None:
+                continue  # unparseable despite passing llm_extractor's own required-field check
+            starts_at = datetime.combine(
+                occurrence_date, _parse_24h_time(o.get("time_24h")) or time(0, 0), tzinfo=timezone.utc
+            )
+            event.occurrences.append(
+                EventOccurrence(
+                    starts_at=starts_at,
+                    date_text=o.get("date_text"),
+                    time_text=o.get("time_text"),
+                    price_text=o.get("price_text"),
+                    sort_order=i,
+                )
+            )
+
+        # Geocoded once here, cached on the row - never looked up at query time (see
+        # geocoding_client.py). Only when at least one location field is present; a
+        # geocoding hiccup (or nothing to geocode at all) leaves lat/lon as they were
+        # rather than clearing a previously-successful geocode from an earlier crawl.
+        geocoded = geocoding_client.geocode_event_location(
+            event.location, event.start_location, event.finish_location
+        )
+        if geocoded is not None:
+            event.latitude, event.longitude = geocoded
+
         event.raw_markdown = markdown
         event.content_hash = content_hash
         event.last_seen_at = now

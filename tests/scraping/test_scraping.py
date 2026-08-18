@@ -403,6 +403,88 @@ def test_crawl_one_listing_url_force_still_respects_in_run_dedup(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# crawl_listing's discovery-mechanism dispatch: sitemap, then parkrun's own
+# events.json feed (see parkrun_feed.py/_is_parkrun), then the normal LLM-
+# guessed listing_urls fallback - each preferred over the next when usable.
+# ---------------------------------------------------------------------------
+
+def test_is_parkrun_detects_known_domains():
+    assert listing_crawler._is_parkrun(Organiser(homepage_url="https://www.parkrun.org.uk/")) is True
+    assert listing_crawler._is_parkrun(Organiser(homepage_url="https://www.parkrun.co.uk/")) is True
+    assert listing_crawler._is_parkrun(Organiser(homepage_url="https://www.runthrough.co.uk/")) is False
+
+
+def test_crawl_listing_uses_parkrun_feed_for_the_parkrun_organiser(monkeypatch):
+    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
+    organiser.id = 1
+    organiser.sitemap_url = None
+    session = _FakeExistingUrlsSession([])
+
+    monkeypatch.setattr(
+        listing_crawler.parkrun_feed, "get_event_urls",
+        lambda: ["https://www.parkrun.org.uk/bushy/", "https://www.parkrun.org.uk/southwark/"],
+    )
+    monkeypatch.setattr(
+        listing_crawler, "_discover_listing_urls",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not fall back to LLM-guessed discovery")),
+    )
+
+    urls = listing_crawler.crawl_listing(session, organiser)
+
+    assert urls == ["https://www.parkrun.org.uk/bushy/", "https://www.parkrun.org.uk/southwark/"]
+
+
+def test_crawl_listing_falls_back_when_parkrun_feed_unusable(monkeypatch):
+    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
+    organiser.id = 1
+    organiser.sitemap_url = None
+    organiser.listing_urls = []
+    session = _FakeExistingUrlsSession([])
+
+    monkeypatch.setattr(listing_crawler.parkrun_feed, "get_event_urls", lambda: None)
+    monkeypatch.setattr(listing_crawler, "_discover_listing_urls", lambda session, organiser: [])
+
+    urls = listing_crawler.crawl_listing(session, organiser)
+
+    assert urls == []  # no listing_urls discovered either - just confirms it didn't crash/short-circuit wrongly
+
+
+def test_crawl_listing_prefers_sitemap_over_parkrun_feed(monkeypatch):
+    # Not a realistic combination in practice, but confirms the stated precedence
+    # (sitemap first) rather than leaving it to incidental code order.
+    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
+    organiser.id = 1
+    organiser.sitemap_url = "https://www.parkrun.org.uk/sitemap.xml"
+    session = _FakeExistingUrlsSession([])
+
+    monkeypatch.setattr(listing_crawler, "_crawl_from_sitemap", lambda *a, **k: ["https://www.parkrun.org.uk/from-sitemap/"])
+    monkeypatch.setattr(
+        listing_crawler.parkrun_feed, "get_event_urls",
+        lambda: (_ for _ in ()).throw(AssertionError("should not reach the parkrun feed when a sitemap resolved first")),
+    )
+
+    urls = listing_crawler.crawl_listing(session, organiser)
+
+    assert urls == ["https://www.parkrun.org.uk/from-sitemap/"]
+
+
+def test_crawl_listing_non_parkrun_organiser_never_touches_parkrun_feed(monkeypatch):
+    organiser = Organiser(homepage_url="https://www.runthrough.co.uk/")
+    organiser.id = 1
+    organiser.sitemap_url = None
+    organiser.listing_urls = []
+    session = _FakeExistingUrlsSession([])
+
+    monkeypatch.setattr(
+        listing_crawler.parkrun_feed, "get_event_urls",
+        lambda: (_ for _ in ()).throw(AssertionError("should not call the parkrun feed for a non-parkrun organiser")),
+    )
+    monkeypatch.setattr(listing_crawler, "_discover_listing_urls", lambda session, organiser: [])
+
+    listing_crawler.crawl_listing(session, organiser)  # must not raise
+
+
+# ---------------------------------------------------------------------------
 # _find_click_selector / _resolve_click_selector: the real bug that broke
 # runthrough.co.uk twice - an LLM-guessed selector either matched dozens of
 # unrelated buttons sharing the same generic class, or an attribute that

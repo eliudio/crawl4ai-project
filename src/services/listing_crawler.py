@@ -48,9 +48,21 @@ import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from services import llm_extractor, robots, scraper_client, sitemap_crawler
+from services import llm_extractor, parkrun_feed, robots, scraper_client, sitemap_crawler
 from services.link_filters import filter_candidate_links
 from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event, Organiser
+
+# parkrun's own homepage is never opened for listing discovery at all - see
+# _crawl_from_parkrun_feed/parkrun_feed.py: its events.json is a direct,
+# structured, worldwide feed of every location, cheaper and more reliable
+# than guessing from an HTML page. Domain-checked rather than a dedicated
+# Organiser column, since parkrun is currently the only organiser fed this
+# way - worth promoting to a real column if a second one ever shows up.
+_PARKRUN_DOMAINS = ("parkrun.org.uk", "parkrun.co.uk")
+
+
+def _is_parkrun(organiser: Organiser) -> bool:
+    return any(domain in organiser.homepage_url for domain in _PARKRUN_DOMAINS)
 
 # Safety caps, not tuning knobs - just there to bound a runaway pagination
 # loop or a "load more" page that never stops offering more.
@@ -524,6 +536,41 @@ def _crawl_from_sitemap(session: Session, organiser: Organiser, force: bool = Fa
     return event_urls if force else new_urls
 
 
+def _crawl_from_parkrun_feed(session: Session, organiser: Organiser, force: bool = False) -> list[str] | None:
+    """
+    Same shape/contract as _crawl_from_sitemap - a third, cheaper-still
+    discovery mechanism, only reached for the parkrun organiser itself (see
+    _is_parkrun). See parkrun_feed.py for why its events.json is trusted
+    ahead of ever opening a listing page for this one organiser.
+
+    Returns None (not []) when the feed couldn't be resolved into anything -
+    crawl_listing falls back to the normal page-crawling mechanism below in
+    that case, same as an unusable sitemap.
+    """
+    event_urls = parkrun_feed.get_event_urls()
+    if event_urls is None:
+        print("DEBUG parkrun feed unusable, falling back to listing_urls")
+        return None
+
+    run = CrawlRun(
+        run_type=CrawlRunType.LISTING,
+        target_url=parkrun_feed.EVENTS_JSON_URL,
+        organiser_id=organiser.id,
+        status=CrawlStatus.SUCCESS,
+        started_at=datetime.now(timezone.utc),
+    )
+    existing_urls = set() if force else set(
+        session.scalars(select(Event.url).where(Event.url.in_(event_urls))).all()
+    )
+    new_urls = [u for u in event_urls if u not in existing_urls]
+    run.detail = f"{len(event_urls)} urls from parkrun feed, {len(new_urls)} new" + (
+        " (force refresh: returning all)" if force else ""
+    )
+    run.finished_at = datetime.now(timezone.utc)
+    session.add(run)
+    return event_urls if force else new_urls
+
+
 def crawl_listing(session: Session, organiser: Organiser, force: bool = False) -> list[str]:
     """
     Crawl one organiser's listing page(s). Returns the event URLs that are
@@ -536,12 +583,19 @@ def crawl_listing(session: Session, organiser: Organiser, force: bool = False) -
     already-stored URL gets replaced in place rather than skipped.
 
     Prefers reading organiser.sitemap_url (see _crawl_from_sitemap) over
-    everything below it when one is known - only falls through to
-    listing_urls/clicking-through when no sitemap is known, or the known one
-    couldn't be resolved into anything.
+    everything below it when one is known, then parkrun's own events.json
+    feed for the parkrun organiser specifically (see _crawl_from_parkrun_feed) -
+    only falls through to listing_urls/clicking-through when neither structured
+    source is known/available, or the known one couldn't be resolved into
+    anything.
     """
     if organiser.sitemap_url:
         event_urls = _crawl_from_sitemap(session, organiser, force=force)
+        if event_urls is not None:
+            return event_urls
+
+    if _is_parkrun(organiser):
+        event_urls = _crawl_from_parkrun_feed(session, organiser, force=force)
         if event_urls is not None:
             return event_urls
 

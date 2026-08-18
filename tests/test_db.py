@@ -14,7 +14,7 @@ ALTER TABLE ... ADD COLUMN support is what _add_missing_columns relies on.
 from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine, inspect
 
 from services import db
-from services.models import Event
+from services.models import Base, Event
 
 
 def _make_engine():
@@ -78,6 +78,32 @@ def test_not_null_column_with_no_default_is_skipped_and_warned(capsys):
     assert "widgets.required_field" in out
 
 
+def test_not_null_column_with_a_server_default_is_added_and_backfilled():
+    # Contrast with the test above: a NOT NULL column CAN be safely auto-added when it
+    # carries a server_default - existing rows get backfilled with that value, same as
+    # a real migration would (confirmed needed in practice: Event.occurrence).
+    engine = _make_engine()
+
+    old_metadata = MetaData()
+    Table("widgets", old_metadata, Column("id", Integer, primary_key=True))
+    old_metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.exec_driver_sql("INSERT INTO widgets (id) VALUES (1)")
+
+    new_metadata = MetaData()
+    Table(
+        "widgets", new_metadata,
+        Column("id", Integer, primary_key=True),
+        Column("status", String(20), nullable=False, server_default="active"),
+    )
+
+    db._add_missing_columns(engine, metadata=new_metadata)
+
+    with engine.connect() as conn:
+        status = conn.exec_driver_sql("SELECT status FROM widgets WHERE id = 1").scalar()
+    assert status == "active"
+
+
 def test_existing_columns_are_left_untouched_and_call_is_idempotent():
     engine = _make_engine()
     metadata = MetaData()
@@ -113,6 +139,46 @@ def test_regression_summary_alt_and_summary_short_added_to_preexisting_events_ta
     columns = {c["name"] for c in inspect(engine).get_columns("events")}
     assert "summary_alt" in columns
     assert "summary_short" in columns
+
+
+def test_regression_repeating_events_columns_and_table_added_to_preexisting_db():
+    # Same incident class as the summary_alt/summary_short one above, replayed for the
+    # repeating-events feature: an `events` table (and a whole database) that predates
+    # occurrence/occurrence_weekdays/occurrence_time/occurrence_starts_on/
+    # occurrence_ends_on/latitude/longitude, and never had an event_occurrences table
+    # at all, must gain all of it - both new columns on an existing table (handled by
+    # _add_missing_columns) and a brand new table (handled by create_all itself, which
+    # init_db() always calls first).
+    engine = _make_engine()
+
+    new_occurrence_columns = {
+        "occurrence", "occurrence_weekdays", "occurrence_time",
+        "occurrence_starts_on", "occurrence_ends_on", "latitude", "longitude",
+    }
+    pre_existing_metadata = MetaData()
+    old_columns = [
+        Column(c.name, c.type, nullable=c.nullable)
+        for c in Event.__table__.columns
+        if c.name not in new_occurrence_columns
+    ]
+    Table("events", pre_existing_metadata, *old_columns)
+    pre_existing_metadata.create_all(engine)
+    assert not new_occurrence_columns & {c["name"] for c in inspect(engine).get_columns("events")}
+    assert "event_occurrences" not in inspect(engine).get_table_names()
+
+    # Mirrors init_db() exactly: create_all() for any table missing entirely
+    # (event_occurrences - "events" itself already exists, so this is a no-op for
+    # it, same as create_all() always was for the reported summary_alt incident too),
+    # then _add_missing_columns() for columns missing from an already-existing one.
+    # Restricted to just this one new table rather than the real init_db()'s full
+    # Base.metadata.create_all(engine) - that would also try (and fail) to build
+    # Organiser's Postgres-only ARRAY column on SQLite, irrelevant to this test.
+    Base.metadata.create_all(engine, tables=[Base.metadata.tables["event_occurrences"]], checkfirst=True)
+    db._add_missing_columns(engine)
+
+    columns = {c["name"] for c in inspect(engine).get_columns("events")}
+    assert new_occurrence_columns <= columns
+    assert "event_occurrences" in inspect(engine).get_table_names()
 
 
 def test_init_db_calls_add_missing_columns(monkeypatch):

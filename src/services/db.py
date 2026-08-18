@@ -6,7 +6,7 @@ from typing import Iterator
 from sqlalchemy import MetaData, create_engine, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.schema import DDL
+from sqlalchemy.schema import DDL, CreateColumn
 
 from services.config import settings
 from services.models import Base
@@ -27,11 +27,16 @@ def _add_missing_columns(engine: Engine, metadata: MetaData = Base.metadata) -> 
     pull` shouldn't require remembering to hand-run an ALTER TABLE first.
 
     Deliberately narrow, not a real migration tool: only ever ADDs a column,
-    never renames/drops/alters an existing one, and only when the new column
-    is nullable - a NOT NULL column with no server-side default can't be safely
-    backfilled onto rows that already exist (there's no value to put in them),
-    so that case is logged and skipped rather than guessed at; it still needs a
-    real migration. Tables that don't exist in the database at all yet are left
+    never renames/drops/alters an existing one, and only when it can be added
+    safely - either the column is nullable, or it's NOT NULL but has a
+    server_default (backfills existing rows with that default, same as a real
+    migration would - confirmed needed in practice: Event.occurrence is NOT
+    NULL with only a Python-side `default=`, same shape as the pre-existing
+    Event.status, so it needed server_default added too to be auto-migratable
+    here at all). A NOT NULL column with no server-side default genuinely can't
+    be backfilled (there's no value to put in existing rows), so that case is
+    logged and skipped rather than guessed at - it still needs a real
+    migration. Tables that don't exist in the database at all yet are left
     alone entirely - create_all() (called right before this) already handles
     those, columns and all.
     """
@@ -46,16 +51,19 @@ def _add_missing_columns(engine: Engine, metadata: MetaData = Base.metadata) -> 
             for column in table.columns:
                 if column.name in existing_columns:
                     continue
-                if not column.nullable:
+                if not column.nullable and column.server_default is None:
                     print(
                         f"WARNING: {table.name}.{column.name} is missing from the database and is "
                         "NOT NULL with no default - can't auto-add it (existing rows would violate "
                         "the constraint). Add it manually."
                     )
                     continue
-                col_type = column.type.compile(dialect=engine.dialect)
-                conn.execute(DDL(f'ALTER TABLE {table.name} ADD COLUMN "{column.name}" {col_type}'))
-                print(f"DEBUG added missing column {table.name}.{column.name} ({col_type})")
+                # CreateColumn renders the whole column definition (type, quoting, DEFAULT,
+                # NOT NULL) the way the dialect actually wants it - simpler and more correct
+                # than hand-assembling those pieces ourselves.
+                column_ddl = CreateColumn(column).compile(dialect=engine.dialect)
+                conn.execute(DDL(f"ALTER TABLE {table.name} ADD COLUMN {column_ddl}"))
+                print(f"DEBUG added missing column {table.name}.{column.name}")
 
 
 def init_db() -> None:

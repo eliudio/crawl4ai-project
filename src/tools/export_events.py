@@ -30,6 +30,7 @@ import argparse
 import csv
 import html
 from datetime import datetime
+from enum import Enum as PyEnum
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -38,7 +39,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from services.db import session_scope
-from services.models import Event, EventDistance, EventStatus, Organiser
+from services.models import Event, EventDistance, EventOccurrence, EventStatus, Organiser
 
 DEFAULT_OUTPUT = {
     "csv": Path("c:/temp/crawl4ai/events/events_export.csv"),
@@ -59,9 +60,17 @@ CSV_FIELDNAMES = [
     "status",
     "invalid_reason",
     "date_text",
+    "occurrence",
+    "occurrence_weekdays",
+    "occurrence_time",
+    "occurrence_starts_on",
+    "occurrence_ends_on",
+    "occurrences",
     "location",
     "start_location",
     "finish_location",
+    "latitude",
+    "longitude",
     "distances",
     "age_restriction_text",
     "url",
@@ -73,14 +82,19 @@ CSV_FIELDNAMES = [
     "last_crawled_at",
 ]
 
-# Fields shown in the HTML event detail tree, in display order. Distances are rendered
-# separately (see _render_distances) since they're a list, not a single scalar value.
-# Status is rendered separately too (see _render_event's INVALID badge) rather than
-# appearing as a plain row here.
+# Fields shown in the HTML event detail tree, in display order. Distances/occurrences are
+# rendered separately (see _render_distances/_render_occurrences) since they're lists, not
+# a single scalar value. Status is rendered separately too (see _render_event's INVALID
+# badge) rather than appearing as a plain row here.
 DETAIL_FIELDS = [
     ("Organiser ID", "organiser_id"),
     ("Sport", "sport"),
     ("Date", "date_text"),
+    ("Recurs", "occurrence"),
+    ("Recurs on", "occurrence_weekdays"),
+    ("Recurs at", "occurrence_time"),
+    ("Recurring from", "occurrence_starts_on"),
+    ("Recurring until", "occurrence_ends_on"),
     ("Location", "location"),
     ("Start location", "start_location"),
     ("Finish location", "finish_location"),
@@ -105,9 +119,12 @@ def _fetch_rows(session, organiser_id: int | None = None, status: EventStatus | 
         select(Event, Organiser.name)
         .join(Organiser, Organiser.id == Event.organiser_id)
         # Eager-load: export_html renders after `session_scope` has closed the session,
-        # so a lazy load of event.distances (or distance.race_type) at that point would
-        # raise DetachedInstanceError.
-        .options(selectinload(Event.distances).selectinload(EventDistance.race_type))
+        # so a lazy load of event.distances (or distance.race_type)/event.occurrences at
+        # that point would raise DetachedInstanceError.
+        .options(
+            selectinload(Event.distances).selectinload(EventDistance.race_type),
+            selectinload(Event.occurrences),
+        )
     )
     if status is not None:
         stmt = stmt.where(Event.status == status)
@@ -125,6 +142,18 @@ def _format_distance(distance: EventDistance) -> str:
 def _distances_summary(event: Event) -> str:
     """One-line "5k: £15; 10k: £20" summary, for the flat CSV format."""
     return "; ".join(_format_distance(d) for d in event.distances)
+
+
+def _format_occurrence(occurrence: EventOccurrence) -> str:
+    label = f"{occurrence.date_text} {occurrence.time_text}" if occurrence.time_text else occurrence.date_text
+    return f"{label}: {occurrence.price_text}" if occurrence.price_text else label
+
+
+def _occurrences_summary(event: Event) -> str:
+    """One-line "18th Aug 2026 06:00 PM: £10.00; ..." summary, for the flat CSV format -
+    same spirit as _distances_summary, empty for a one-off/unbounded-recurrence event
+    with no individually-listed dates (see models.py's Occurrence docstring)."""
+    return "; ".join(_format_occurrence(o) for o in event.occurrences)
 
 
 def export_csv(output_path: Path, organiser_id: int | None = None) -> int:
@@ -146,9 +175,17 @@ def export_csv(output_path: Path, organiser_id: int | None = None) -> int:
                     "status": event.status.value if event.status else EventStatus.VALID.value,
                     "invalid_reason": event.invalid_reason,
                     "date_text": event.date_text,
+                    "occurrence": event.occurrence.value if event.occurrence else None,
+                    "occurrence_weekdays": ", ".join(event.occurrence_weekdays) if event.occurrence_weekdays else None,
+                    "occurrence_time": event.occurrence_time,
+                    "occurrence_starts_on": event.occurrence_starts_on,
+                    "occurrence_ends_on": event.occurrence_ends_on,
+                    "occurrences": _occurrences_summary(event),
                     "location": event.location,
                     "start_location": event.start_location,
                     "finish_location": event.finish_location,
+                    "latitude": event.latitude,
+                    "longitude": event.longitude,
                     "distances": _distances_summary(event),
                     "age_restriction_text": event.age_restriction_text,
                     "url": event.url,
@@ -176,6 +213,17 @@ def _maps_embed_url(location: str) -> str:
 
 
 def _render_map(event: Event) -> str:
+    # Prefer the event's own geocoded coordinates (see geocoding_client.py, populated once
+    # per crawl) when available - a real point rather than a text search Google has to
+    # resolve itself, and the same coordinates a "near me" query would filter on, so what's
+    # shown here is exactly what the database actually thinks this event's location is.
+    if event.latitude is not None and event.longitude is not None:
+        coords = f"{event.latitude},{event.longitude}"
+        return f"""
+        <p><a class="maps-link" href="https://www.google.com/maps/search/?api=1&query={coords}" target="_blank" rel="noopener">Open in Google Maps &#8599;</a></p>
+        <iframe class="maps-embed" src="https://www.google.com/maps?q={coords}&output=embed" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+        """
+
     location = event.location or event.start_location or event.finish_location
     if not location:
         return '<p class="no-map">No location available.</p>'
@@ -204,6 +252,36 @@ def _render_distances(event: Event) -> str:
         '<table class="distances"><thead><tr><th>Distance</th><th>Price</th>'
         f'<th>Race type</th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
     )
+
+
+def _render_occurrences(event: Event) -> str:
+    """Same shape as _render_distances - empty for a one-off event (no individually-listed
+    dates at all) or an unbounded recurrence (see "Recurs on"/"Recurs at" instead, rendered
+    as plain DETAIL_FIELDS rows) - only populated for a bounded/enumerated one (see
+    models.py's Occurrence docstring)."""
+    if not event.occurrences:
+        return '<p class="empty">No specific dates listed.</p>'
+
+    rows = []
+    for o in event.occurrences:
+        time_html = html.escape(o.time_text) if o.time_text else '<span class="empty">&mdash;</span>'
+        price_html = html.escape(o.price_text) if o.price_text else '<span class="empty">&mdash;</span>'
+        rows.append(f"<tr><td>{html.escape(o.date_text or '')}</td><td>{time_html}</td><td>{price_html}</td></tr>")
+    return (
+        '<table class="distances"><thead><tr><th>Date</th><th>Time</th>'
+        f'<th>Price</th></tr></thead><tbody>{"".join(rows)}</tbody></table>'
+    )
+
+
+def _format_detail_value(value) -> str:
+    """Shared by every DETAIL_FIELDS row below - str(value) alone renders a couple of real
+    shapes awkwardly: an Enum's default str() is "Occurrence.WEEKLY", not its own value
+    ("weekly"), and a list reads as Python's own repr rather than a plain line of text."""
+    if isinstance(value, PyEnum):
+        return value.value
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+    return str(value)
 
 
 def _render_page_content(event: Event) -> str:
@@ -244,7 +322,7 @@ def _render_event(event: Event, organiser_name: str | None = None) -> str:
         rows.append(f'<tr><th>Invalid reason</th><td class="invalid-reason">{reason_html}</td></tr>')
     for label, attr in DETAIL_FIELDS:
         value = getattr(event, attr)
-        value_html = html.escape(str(value)) if value else '<span class="empty">&mdash;</span>'
+        value_html = html.escape(_format_detail_value(value)) if value else '<span class="empty">&mdash;</span>'
         rows.append(f"<tr><th>{html.escape(label)}</th><td>{value_html}</td></tr>")
     if event.url:
         rows.append(
@@ -259,6 +337,10 @@ def _render_event(event: Event, organiser_name: str | None = None) -> str:
             <div class="distances-section">
               <h4>Distances</h4>
               {_render_distances(event)}
+            </div>
+            <div class="distances-section">
+              <h4>Specific dates</h4>
+              {_render_occurrences(event)}
             </div>
             <div class="map">{_render_map(event)}</div>
             {_render_page_content(event)}

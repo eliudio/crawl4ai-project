@@ -11,17 +11,21 @@ Table design notes:
   LLM call) when a page hasn't changed since last time.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
+    JSON,
     Boolean,
+    Date,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Integer,
     String,
     Text,
+    Time,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -68,6 +72,35 @@ class EventStatus(PyEnum):
 
     VALID = "valid"
     INVALID = "invalid"
+
+
+class Occurrence(PyEnum):
+    """
+    How an event recurs. Two genuinely different storage mechanisms sit behind
+    this, decided by whether the organiser's own page enumerates concrete dates
+    at all - see Event's own occurrence_* columns and EventOccurrence below:
+
+    - ONE_OFF / SPECIFIC_DATES: bounded - a finite, known set of dates (a
+      single date, or several individually listed/ticketed ones - e.g.
+      atwevents.co.uk's own per-session tickets, one row each). These live in
+      EventOccurrence, one row per known date+time. A one-off event is simply
+      a SPECIFIC_DATES-shaped event with exactly one row - ONE_OFF exists as
+      its own value purely as a descriptive label for humans/UI, not a
+      different storage path.
+    - DAILY / WEEKLY / MONTHLY / YEARLY: unbounded - a standing rule with no
+      enumerable dates at all (e.g. parkrun: "every Saturday, 9am", forever,
+      no page ever lists individual future dates). Represented by Event's own
+      occurrence_weekdays/occurrence_time/occurrence_starts_on/
+      occurrence_ends_on directly - EventOccurrence stays empty for these,
+      that's correct, not a gap.
+    """
+
+    ONE_OFF = "one_off"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+    YEARLY = "yearly"
+    SPECIFIC_DATES = "specific_dates"
 
 
 class Sport(PyEnum):
@@ -168,6 +201,46 @@ class Event(Base):
     raw_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # See Occurrence's own docstring for the two mechanisms this splits into.
+    # Defaults to ONE_OFF, same reasoning as EventStatus defaulting to VALID -
+    # most crawled events really are one-off.
+    # server_default (not just the Python-side default= above) so this NOT NULL column
+    # can still be added to an already-existing `events` table by db.py's
+    # _add_missing_columns - a plain default= only applies to rows the ORM itself
+    # inserts, never to backfilling existing rows via ALTER TABLE ADD COLUMN.
+    occurrence: Mapped[Occurrence] = mapped_column(
+        Enum(Occurrence, name="event_occurrence"),
+        default=Occurrence.ONE_OFF,
+        server_default=Occurrence.ONE_OFF.value,
+    )
+    # Only meaningful for DAILY/WEEKLY/MONTHLY/YEARLY (an unbounded recurrence with
+    # nothing to enumerate) - which weekday(s) it falls on, lowercase 3-letter
+    # abbreviations ("mon"/"tue"/"wed"/"thu"/"fri"/"sat"/"sun"), e.g. parkrun -> ["sat"].
+    # A list rather than one value, since a single rule can cover more than one weekday
+    # (e.g. a club's "Tue/Thu evening" sessions). Null for ONE_OFF/SPECIFIC_DATES, where
+    # EventOccurrence rows carry the real dates instead.
+    # JSON, not Postgres' ARRAY (unlike Organiser.listing_urls) - `events` gets its real
+    # table created directly on SQLite throughout the test suite (test_event_crawler.py,
+    # test_db.py, ...), which ARRAY can't compile for; JSON round-trips a list of strings
+    # fine on both backends.
+    occurrence_weekdays: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    occurrence_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    # Validity window for an unbounded recurrence - both NULL means indefinite
+    # (parkrun's actual "forever"); both set means a seasonal pattern (e.g.
+    # atwevents.co.uk's swim lake, "Easter until end-September") - without this, a
+    # plain weekday match would report a seasonal event as happening year-round.
+    occurrence_starts_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    occurrence_ends_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    # Geocoded from start_location (falling back to location, then finish_location -
+    # same priority export_events.py's _render_map already uses) via
+    # geocoding_client.py, once per crawl - never looked up at query time. Null until
+    # a crawl has actually attempted geocoding (or attempted and found nothing) -
+    # there's no third "not yet tried" state distinct from "tried, no result", since
+    # a failed/empty geocode isn't retried differently from never having tried at all.
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
@@ -182,6 +255,12 @@ class Event(Base):
     # clears event.distances before re-appending) doesn't leave stale rows behind.
     distances: Mapped[list["EventDistance"]] = relationship(
         back_populates="event", cascade="all, delete-orphan", order_by="EventDistance.sort_order"
+    )
+    # Concrete known dates - see Occurrence's own docstring: populated for a one-off
+    # event (exactly one row) or a bounded/enumerated recurring event (one row per
+    # listed date), left empty for an unbounded recurrence (nothing to enumerate).
+    occurrences: Mapped[list["EventOccurrence"]] = relationship(
+        back_populates="event", cascade="all, delete-orphan", order_by="EventOccurrence.sort_order"
     )
 
 
@@ -232,6 +311,56 @@ class EventDistance(Base):
 
     event: Mapped["Event"] = relationship(back_populates="distances")
     race_type: Mapped["RaceType | None"] = relationship(back_populates="distances")
+
+
+class EventOccurrence(Base):
+    """
+    One concrete, known date+time this event happens - see Occurrence's own
+    docstring for which events get rows here at all (a one-off event, exactly
+    one row; a bounded/enumerated recurring event like atwevents.co.uk's own
+    per-session tickets, one row per listed date) versus which don't (an
+    unbounded recurrence like parkrun's "every Saturday, forever", nothing to
+    enumerate - see Event.occurrence_weekdays/occurrence_time instead).
+
+    Mirrors EventDistance's own shape closely (one-to-many off Event, own
+    sort_order, verbatim text alongside a price override) - same underlying
+    pattern, "distance" there vs. "date" here.
+    """
+
+    __tablename__ = "event_occurrences"
+    __table_args__ = (
+        UniqueConstraint("event_id", "starts_at", name="uq_event_occurrence_event_starts_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    # Verbatim, as written on the page (e.g. "18th Aug 2026", "06:00 PM") - same
+    # "never let a derived value replace the original" convention as
+    # Event.summary/summary_alt and EventDistance.distance_text.
+    date_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    time_text: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Per-occurrence price override, if the page states one (confirmed in practice:
+    # atwevents.co.uk's swim sessions each have their own price, e.g. "on the day"
+    # vs "pre-booking" vs a monthly pass). Null means nothing occurrence-specific
+    # was stated, not "this occurrence is free".
+    price_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # The booking platform's own stable per-ticket/session id, when the page exposes
+    # one (confirmed in practice: eventrac's own rId=... query param on its "Enter
+    # Now" buttons) - lets a re-crawl update this exact row in place instead of the
+    # delete-everything-reinsert-everything EventDistance has to do (distance_text
+    # has no stable key across re-wordings; a specific calendar date does, so this is
+    # a nice-to-have upgrade over that, not a requirement - re-crawl still falls back
+    # to matching on (event_id, starts_at) via the unique constraint above when a
+    # platform doesn't expose one).
+    external_ticket_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    event: Mapped["Event"] = relationship(back_populates="occurrences")
 
 
 class CrawlRun(Base):

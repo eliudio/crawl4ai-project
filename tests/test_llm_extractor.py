@@ -30,6 +30,12 @@ _FULL_LLM_RESPONSE = {
     "distances": [{"distance_text": "5k", "price_text": "£15", "distance_category": "5k"}],
     "is_valid_event": True,
     "invalid_reason": None,
+    "occurrence": "one_off",
+    "occurrences": [],
+    "occurrence_weekdays": [],
+    "occurrence_time": None,
+    "occurrence_starts_on": None,
+    "occurrence_ends_on": None,
 }
 
 
@@ -39,7 +45,7 @@ def test_no_known_fields_asks_llm_for_everything(monkeypatch):
 
     result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
 
-    assert set(capture["required"]) == {"name", "sport", "is_valid_event"}
+    assert set(capture["required"]) == {"name", "sport", "is_valid_event", "occurrence"}
     assert "name" in capture["schema_properties"]
     assert "sport" in capture["schema_properties"]
     assert result["name"] == "Should never be used"
@@ -52,13 +58,20 @@ def test_known_fields_removed_from_schema_and_required(monkeypatch):
     known_fields = {"name": "Poole 3k 2027", "sport": "running", "date_text": "2027-05-29", "location": "Baiter Park"}
     llm_extractor.extract_event_fields("https://example.com/event", "some markdown", known_fields=known_fields)
 
-    for key in known_fields:
+    # date_text is a deliberate exception (see extract_event_fields's own docstring) -
+    # always re-asked even when known_fields supplied one, since JSON-LD's single date
+    # can be stale/misleading for a multi-occurrence event. Every other known field is
+    # removed from the schema/required entirely, as before.
+    for key in ("name", "sport", "location"):
         assert key not in capture["schema_properties"]
         assert key not in capture["required"]
-    # distances/is_valid_event/invalid_reason have no schema.org equivalent - always asked.
+    assert "date_text" in capture["schema_properties"]
+    assert "date_text" not in capture["required"]  # never was required in the first place
+    # distances/is_valid_event/invalid_reason/occurrence* have no schema.org equivalent - always asked.
     assert "distances" in capture["schema_properties"]
     assert "is_valid_event" in capture["schema_properties"]
-    assert capture["required"] == ["is_valid_event"]
+    assert "occurrence" in capture["schema_properties"]
+    assert set(capture["required"]) == {"is_valid_event", "occurrence"}
 
 
 def test_known_fields_win_in_the_final_merged_result(monkeypatch):
@@ -75,6 +88,106 @@ def test_known_fields_win_in_the_final_merged_result(monkeypatch):
     # Whatever known_fields didn't cover still comes from the LLM as normal.
     assert result["distances"] == [{"distance_text": "5k", "price_text": "£15", "distance_category": "5k"}]
     assert result["is_valid_event"] is True
+
+
+# ---------------------------------------------------------------------------
+# occurrence/occurrences/occurrence_weekdays - see the reported case:
+# atwevents.co.uk's own JSON-LD startDate ("2023-04-30") is stale and unrelated
+# to its real, current weekly sessions - a multi-occurrence event must prefer
+# the LLM's own date_text over a known_fields one, unlike a plain one-off event.
+# ---------------------------------------------------------------------------
+
+def test_known_date_text_still_wins_for_a_one_off_event(monkeypatch):
+    # Contrast with the multi-occurrence case below - this is the common case, and
+    # must behave exactly as it always has: known_fields wins outright.
+    _patch_run_llm(monkeypatch, {**_FULL_LLM_RESPONSE, "occurrence": "one_off", "date_text": "wrong LLM guess"})
+
+    result = llm_extractor.extract_event_fields(
+        "https://example.com/event", "some markdown", known_fields={"date_text": "2027-05-29"}
+    )
+
+    assert result["date_text"] == "2027-05-29"
+
+
+def test_llm_date_text_wins_over_known_fields_for_a_multi_occurrence_event(monkeypatch):
+    _patch_run_llm(monkeypatch, {
+        **_FULL_LLM_RESPONSE,
+        "occurrence": "weekly",
+        "date_text": "Every Saturday, 9:00am",
+        "occurrence_weekdays": ["sat"],
+    })
+
+    result = llm_extractor.extract_event_fields(
+        "https://example.com/event", "some markdown", known_fields={"date_text": "2023-04-30"}
+    )
+
+    assert result["date_text"] == "Every Saturday, 9:00am"
+    assert result["occurrence"] == "weekly"
+
+
+def test_known_date_text_used_as_fallback_when_llm_leaves_its_own_blank(monkeypatch):
+    # Better than ending up with neither, even though occurrence != one_off.
+    _patch_run_llm(monkeypatch, {**_FULL_LLM_RESPONSE, "occurrence": "weekly", "date_text": None})
+
+    result = llm_extractor.extract_event_fields(
+        "https://example.com/event", "some markdown", known_fields={"date_text": "2023-04-30"}
+    )
+
+    assert result["date_text"] == "2023-04-30"
+
+
+def test_occurrence_invalid_value_falls_back_to_one_off(monkeypatch):
+    _patch_run_llm(monkeypatch, {**_FULL_LLM_RESPONSE, "occurrence": "fortnightly"})
+
+    result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
+
+    assert result["occurrence"] == "one_off"
+
+
+def test_occurrence_missing_from_response_falls_back_to_one_off(monkeypatch):
+    response = dict(_FULL_LLM_RESPONSE)
+    del response["occurrence"]
+    _patch_run_llm(monkeypatch, response)
+
+    result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
+
+    assert result["occurrence"] == "one_off"
+
+
+def test_occurrence_weekdays_filters_invalid_entries(monkeypatch):
+    _patch_run_llm(monkeypatch, {**_FULL_LLM_RESPONSE, "occurrence_weekdays": ["sat", "SUN", "funday", 5]})
+
+    result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
+
+    assert result["occurrence_weekdays"] == ["sat", "sun"]
+
+
+def test_occurrences_keeps_only_well_formed_entries(monkeypatch):
+    _patch_run_llm(monkeypatch, {
+        **_FULL_LLM_RESPONSE,
+        "occurrence": "specific_dates",
+        "occurrences": [
+            {"date_text": "18th Aug 2026", "date_iso": "2026-08-18", "time_text": "06:00 PM", "time_24h": "18:00", "price_text": "£10.00"},
+            {"date_text": "no iso date given"},  # missing date_iso - dropped
+            "not even a dict",  # dropped
+            {"date_text": "20th Aug 2026", "date_iso": "2026-08-20"},  # no time/price - fine, both null
+        ],
+    })
+
+    result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
+
+    assert result["occurrences"] == [
+        {"date_text": "18th Aug 2026", "date_iso": "2026-08-18", "time_text": "06:00 PM", "time_24h": "18:00", "price_text": "£10.00"},
+        {"date_text": "20th Aug 2026", "date_iso": "2026-08-20", "time_text": None, "time_24h": None, "price_text": None},
+    ]
+
+
+def test_occurrences_malformed_response_becomes_empty_list(monkeypatch):
+    _patch_run_llm(monkeypatch, {**_FULL_LLM_RESPONSE, "occurrences": "not a list"})
+
+    result = llm_extractor.extract_event_fields("https://example.com/event", "some markdown")
+
+    assert result["occurrences"] == []
 
 
 def test_known_fields_mentioned_in_the_prompt_sent_to_the_llm(monkeypatch):

@@ -118,8 +118,95 @@ _EVENT_SCHEMA_PROPERTIES: dict[str, Any] = {
         ),
     },
     "age_restriction_text": {"type": ["string", "null"], "description": "Minimum age / age category rules, if stated"},
+    "occurrence": {
+        "type": "string",
+        "enum": ["one_off", "daily", "weekly", "monthly", "yearly", "specific_dates"],
+        "description": (
+            "How this event recurs. 'one_off' (the default/most common case): happens once, "
+            "on a single date. 'specific_dates': the page individually lists/tickets several "
+            "distinct dates for the SAME event - confirmed in practice: atwevents.co.uk's open "
+            "water swimming page sells a separate ticket per session date ('TUESDAY 18/8', "
+            "'THURSDAY 20/8', ...), each its own specific calendar date. 'daily'/'weekly'/"
+            "'monthly'/'yearly': a standing recurring rule stated on the page with NO specific "
+            "dates listed anywhere at all - confirmed in practice: parkrun's 'every Saturday, "
+            "9am', forever, with no page ever listing individual future dates.\n"
+            "Use 'specific_dates' whenever the page actually lists individual dates, even if "
+            "its own prose also uses recurrence language like 'weekly' - only use daily/weekly/"
+            "monthly/yearly when there truly is no list of specific dates to read, just a "
+            "stated rule. Do not confuse this with `distances` above: a page offering several "
+            "DISTANCE options on the SAME single date is still 'one_off' (each distance is its "
+            "own entry in `distances`, not evidence of recurrence) - only classify as "
+            "'specific_dates'/recurring when what varies between listed entries is the DATE "
+            "itself, not the distance."
+        ),
+    },
+    "occurrences": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "date_text": {"type": "string", "description": "One specific date this event happens on, exactly as written (e.g. '18th Aug 2026')"},
+                "date_iso": {
+                    "type": "string",
+                    "description": (
+                        "The date above, converted to ISO YYYY-MM-DD - use the year actually "
+                        "implied by the page's own context (e.g. a date shown with no year, on "
+                        "a page whose other dates are clearly in 2026, should resolve to 2026)."
+                    ),
+                },
+                "time_text": {"type": ["string", "null"], "description": "That date's own start time, exactly as written, if stated separately (e.g. '06:00 PM')"},
+                "time_24h": {"type": ["string", "null"], "description": "That time, converted to 24h HH:MM. Null if no time was stated for this date - never guess/default one."},
+                "price_text": {"type": ["string", "null"], "description": "That date's own price, exactly as written, if it differs per date. Null if one overall price covers every date."},
+            },
+            "required": ["date_text", "date_iso"],
+        },
+        "description": (
+            "Only filled in when occurrence is 'specific_dates' (or, for a plain 'one_off' "
+            "event, this may still hold that single date as its only entry). Each entry is one "
+            "individually-listed date this event happens on - NOT a distance/ticket-tier option "
+            "on the same date; a page offering several DISTANCES on one date belongs in "
+            "`distances` above instead, not here. Empty for occurrence 'daily'/'weekly'/"
+            "'monthly'/'yearly' (see occurrence_weekdays/occurrence_time below instead), and "
+            "whenever is_valid_event is false."
+        ),
+    },
+    "occurrence_weekdays": {
+        "type": "array",
+        "items": {"type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]},
+        "description": (
+            "Only for occurrence 'daily'/'weekly'/'monthly'/'yearly' - which weekday(s) this "
+            "standing rule falls on (e.g. parkrun -> ['sat']). A rule can name more than one "
+            "weekday (e.g. 'Tuesday and Thursday evenings' -> ['tue', 'thu']). Empty for "
+            "'one_off'/'specific_dates'."
+        ),
+    },
+    "occurrence_time": {
+        "type": ["string", "null"],
+        "description": (
+            "Only for occurrence 'daily'/'weekly'/'monthly'/'yearly' - the stated time of day, "
+            "24h HH:MM (e.g. '09:00' for 'every Saturday at 9am'). Null if no time is stated, "
+            "or occurrence is 'one_off'/'specific_dates'."
+        ),
+    },
+    "occurrence_starts_on": {
+        "type": ["string", "null"],
+        "description": (
+            "Only for a recurring rule with a stated start of its season/window (e.g. 'from "
+            "Easter' or 'from May' -> that date, ISO YYYY-MM-DD, using the year implied by the "
+            "page's own context). Null if the rule runs indefinitely/all year, or occurrence is "
+            "'one_off'/'specific_dates'."
+        ),
+    },
+    "occurrence_ends_on": {
+        "type": ["string", "null"],
+        "description": (
+            "Only for a recurring rule with a stated end of its season/window (e.g. 'until "
+            "end-September' -> that date, ISO YYYY-MM-DD). Null if indefinite, or occurrence is "
+            "'one_off'/'specific_dates'."
+        ),
+    },
 }
-_EVENT_REQUIRED = ["name", "sport", "is_valid_event"]
+_EVENT_REQUIRED = ["name", "sport", "is_valid_event", "occurrence"]
 
 _EVENT_SYSTEM_PROMPT = (
     "You are a precise sports event data extractor. Extract only what is "
@@ -127,7 +214,12 @@ _EVENT_SYSTEM_PROMPT = (
     "or unclear. Do not invent values. Before extracting anything else, check "
     "whether the page actually describes a specific event at all (see "
     "is_valid_event) - a redirect notice, dead page, or other non-event content "
-    "must be flagged as invalid rather than mined for plausible-looking details."
+    "must be flagged as invalid rather than mined for plausible-looking details. "
+    "Also judge carefully whether this event happens once, on several individually "
+    "listed dates, or on a standing recurring schedule with no specific dates given at "
+    "all (see occurrence/occurrences/occurrence_weekdays) - don't default to 'one_off' "
+    "without checking, but equally don't call something recurring just because its "
+    "prose uses a word like 'weekly' if the page actually lists specific dates."
 )
 
 _SUMMARY_REWRITE_SCHEMA_PROPERTIES: dict[str, Any] = {
@@ -473,17 +565,26 @@ def extract_event_fields(
     page's own schema.org JSON-LD, if present - deterministic and free. Those keys are
     removed from the schema/required list sent to the LLM entirely (not merely offered as
     a hint) so it's never even asked to re-derive them, only whatever's still missing.
-    distances/is_valid_event/invalid_reason never come from JSON-LD (schema.org's Event
-    vocabulary has no equivalent for any of those), so those three are always asked
+    distances/is_valid_event/invalid_reason/occurrence* never come from JSON-LD (schema.org's
+    Event vocabulary has no equivalent for any of those), so those are always asked
     regardless of what known_fields contains.
+
+    date_text is a deliberate exception to "known_fields is never re-asked": it's always
+    included in the schema sent to the LLM even when JSON-LD supplied one, because JSON-LD's
+    startDate/endDate is only ever a single date and can be stale/misleading for a multi-
+    occurrence event - confirmed in practice: atwevents.co.uk's own JSON-LD states a leftover
+    "2023-04-30" placeholder, completely unrelated to its real, current weekly Aug-2026
+    sessions. See the occurrence-aware override below the LLM call.
     """
     print(f"{datetime.now():%H:%M:%S} - extract_event_fields ({settings.llm_provider}): {url}")
     if not markdown.strip():
         return None
 
     known_fields = known_fields or {}
-    schema_properties = {k: v for k, v in _EVENT_SCHEMA_PROPERTIES.items() if k not in known_fields}
-    required = [k for k in _EVENT_REQUIRED if k not in known_fields]
+    schema_properties = {
+        k: v for k, v in _EVENT_SCHEMA_PROPERTIES.items() if k not in known_fields or k == "date_text"
+    }
+    required = [k for k in _EVENT_REQUIRED if k not in known_fields or k == "date_text"]
 
     instructions = f"Extract from this page content:\n\n{markdown}"
     if known_fields:
@@ -492,6 +593,13 @@ def extract_event_fields(
             "JSON-LD) - treat these as correct, don't re-derive or contradict them, just "
             "fill in everything else:\n" + json.dumps(known_fields, indent=2)
         )
+        if "date_text" in known_fields:
+            instructions += (
+                "\n\nException: still answer date_text yourself from the page content, even "
+                "though one was also read from structured data above - that structured-data "
+                "date is only a single date and may be stale or incomplete for an event that "
+                "recurs or has several listed dates (see occurrence/occurrences)."
+            )
 
     user_prompt = _build_user_prompt(instructions, schema_properties, required)
     try:
@@ -503,7 +611,11 @@ def extract_event_fields(
     result = {
         key: fields.get(key)
         for key in schema_properties
-        if key not in ("distances", "is_valid_event", "invalid_reason")
+        if key
+        not in (
+            "distances", "is_valid_event", "invalid_reason",
+            "occurrence", "occurrences", "occurrence_weekdays",
+        )
     }
     result["distances"] = _normalize_distances(fields.get("distances"))
     # Defaults to True (valid) rather than False on a malformed/missing response - an
@@ -513,7 +625,18 @@ def extract_event_fields(
     invalid_reason = fields.get("invalid_reason")
     result["invalid_reason"] = str(invalid_reason).strip() if (not result["is_valid_event"] and invalid_reason) else None
 
-    result.update(known_fields)  # structured-data fields win outright, never overwritten by the LLM
+    result["occurrence"] = _normalize_occurrence(fields.get("occurrence"))
+    result["occurrences"] = _normalize_occurrences(fields.get("occurrences"))
+    result["occurrence_weekdays"] = _normalize_occurrence_weekdays(fields.get("occurrence_weekdays"))
+
+    trusted_known_fields = dict(known_fields)
+    if result["occurrence"] != "one_off" and "date_text" in trusted_known_fields:
+        # See this function's own docstring: JSON-LD's single startDate/endDate isn't
+        # trustworthy once this turns out to be a multi-occurrence event - prefer the LLM's
+        # own (occurrence-aware) date_text, falling back to the JSON-LD one only if the LLM
+        # left its own blank, rather than ending up with neither.
+        trusted_known_fields["date_text"] = result.get("date_text") or trusted_known_fields["date_text"]
+    result.update(trusted_known_fields)  # structured-data fields win outright, never overwritten by the LLM
     return result
 
 
@@ -539,6 +662,54 @@ def _normalize_distances(raw: Any) -> list[dict[str, str | None]]:
             "distance_category": str(distance_category).strip().lower() if distance_category else None,
         })
     return distances
+
+
+_VALID_OCCURRENCE_VALUES = {"one_off", "daily", "weekly", "monthly", "yearly", "specific_dates"}
+_VALID_WEEKDAYS = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+
+
+def _normalize_occurrence(raw: Any) -> str:
+    """Falls back to 'one_off' on anything malformed/unexpected - both providers' JSON modes
+    (Grok's response_format, Ollama's format="json") aren't schema-enforcing the way
+    Anthropic's tool_choice is, so an off-list value has to be tolerated, not trusted."""
+    if isinstance(raw, str) and raw.strip().lower() in _VALID_OCCURRENCE_VALUES:
+        return raw.strip().lower()
+    return "one_off"
+
+
+def _normalize_occurrence_weekdays(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    return sorted({w.strip().lower() for w in raw if isinstance(w, str) and w.strip().lower() in _VALID_WEEKDAYS})
+
+
+def _normalize_occurrences(raw: Any) -> list[dict[str, str | None]]:
+    """Guards against a malformed/partial LLM response, same spirit as _normalize_distances -
+    date_iso is required here (event_crawler.py needs a real parseable date to build an
+    EventOccurrence row at all), so an entry missing/failing to parse one is dropped entirely
+    rather than stored with a nonsense or absent date."""
+    if not isinstance(raw, list):
+        return []
+
+    occurrences: list[dict[str, str | None]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        date_text = entry.get("date_text")
+        date_iso = entry.get("date_iso")
+        if not date_text or not date_iso:
+            continue
+        time_text = entry.get("time_text")
+        time_24h = entry.get("time_24h")
+        price_text = entry.get("price_text")
+        occurrences.append({
+            "date_text": str(date_text),
+            "date_iso": str(date_iso),
+            "time_text": str(time_text) if time_text else None,
+            "time_24h": str(time_24h) if time_24h else None,
+            "price_text": str(price_text) if price_text else None,
+        })
+    return occurrences
 
 
 def rewrite_summary(summary: str) -> dict[str, str | None]:

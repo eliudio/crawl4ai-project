@@ -15,10 +15,11 @@ tested directly against hand-built model instances, no monkeypatching needed.
 
 import csv
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 import pytest
 
-from services.models import Event, EventDistance, EventStatus, Organiser, RaceType, Sport
+from services.models import Event, EventDistance, EventOccurrence, EventStatus, Occurrence, Organiser, RaceType, Sport
 from tools import export_events
 
 # Captured before any test's autouse fixture monkeypatches export_events._fetch_rows (see
@@ -91,6 +92,22 @@ def test_render_map_falls_back_to_start_location():
     assert "Start Line" in export_events._render_map(event)
 
 
+def test_render_map_prefers_stored_coordinates_over_text_location():
+    # See geocoding_client.py - a real geocoded point is preferred over a text search
+    # Google would otherwise have to resolve itself, and is exactly what a "near me"
+    # query would filter on, so the map should show precisely that, when it exists.
+    event = Event(location="Hyde Park", latitude=51.5073, longitude=-0.1657)
+    rendered = export_events._render_map(event)
+    assert "51.5073,-0.1657" in rendered
+    assert "Hyde Park" not in rendered  # coordinates win outright, not a fallback hint
+
+
+def test_render_map_falls_back_to_text_when_not_yet_geocoded():
+    event = Event(location="Hyde Park", latitude=None, longitude=None)
+    rendered = export_events._render_map(event)
+    assert "Hyde Park" in rendered
+
+
 # ---------------------------------------------------------------------------
 # _render_distances
 # ---------------------------------------------------------------------------
@@ -113,6 +130,54 @@ def test_render_distances_shows_placeholder_when_no_race_type():
     rendered = export_events._render_distances(event)
     assert "Fun Run" in rendered
     assert rendered.count('<span class="empty">&mdash;</span>') == 2  # price AND race type both missing
+
+
+# ---------------------------------------------------------------------------
+# _render_occurrences - same shape as _render_distances, for the "specific
+# dates" (bounded/enumerated recurrence) case - see models.py's Occurrence.
+# ---------------------------------------------------------------------------
+
+def test_render_occurrences_empty():
+    assert "No specific dates listed" in export_events._render_occurrences(Event(occurrences=[]))
+
+
+def test_render_occurrences_shows_date_time_and_price():
+    event = Event(occurrences=[
+        EventOccurrence(
+            starts_at=datetime(2026, 8, 18, 18, 0, tzinfo=timezone.utc),
+            date_text="18th Aug 2026", time_text="06:00 PM", price_text="£10.00",
+        ),
+    ])
+    rendered = export_events._render_occurrences(event)
+    assert "18th Aug 2026" in rendered
+    assert "06:00 PM" in rendered
+    assert "£10.00" in rendered
+
+
+def test_render_occurrences_shows_placeholder_when_no_time_or_price():
+    event = Event(occurrences=[
+        EventOccurrence(starts_at=datetime(2026, 8, 20, 0, 0, tzinfo=timezone.utc), date_text="20th Aug 2026"),
+    ])
+    rendered = export_events._render_occurrences(event)
+    assert "20th Aug 2026" in rendered
+    assert rendered.count('<span class="empty">&mdash;</span>') == 2  # time AND price both missing
+
+
+# ---------------------------------------------------------------------------
+# _format_detail_value - the couple of DETAIL_FIELDS value shapes plain
+# str(value) renders awkwardly.
+# ---------------------------------------------------------------------------
+
+def test_format_detail_value_uses_enum_value_not_default_str():
+    assert export_events._format_detail_value(Occurrence.WEEKLY) == "weekly"
+
+
+def test_format_detail_value_joins_a_list_with_commas():
+    assert export_events._format_detail_value(["sat", "sun"]) == "sat, sun"
+
+
+def test_format_detail_value_passes_through_plain_values():
+    assert export_events._format_detail_value("plain string") == "plain string"
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +419,28 @@ def test_export_csv_writes_header_and_rows(tmp_path):
     assert rows[1]["distances"] == "10K [running_10k]: £20; Fun Run"
     assert rows[0]["status"] == "valid"
     assert rows[0]["invalid_reason"] == ""
+
+
+def test_export_csv_includes_occurrence_and_coordinates(monkeypatch, tmp_path):
+    event = Event(
+        id=5, organiser_id=1, url="https://parkrun.example/bushy", name="Bushy parkrun",
+        sport="running", status=EventStatus.VALID, date_text="Every Saturday, 9:00am",
+        occurrence=Occurrence.WEEKLY, occurrence_weekdays=["sat"],
+        occurrence_time=None, occurrence_starts_on=None, occurrence_ends_on=None,
+        latitude=51.4118, longitude=-0.3277,
+        location=None, raw_markdown=None, distances=[], occurrences=[],
+    )
+    monkeypatch.setattr(export_events, "_fetch_rows", lambda session, organiser_id=None, status=None: [(event, "parkrun UK")])
+
+    export_events.export_csv(tmp_path / "parkrun.csv")
+
+    with (tmp_path / "parkrun.csv").open(encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+
+    assert rows[0]["occurrence"] == "weekly"
+    assert rows[0]["occurrence_weekdays"] == "sat"
+    assert rows[0]["latitude"] == "51.4118"
+    assert rows[0]["longitude"] == "-0.3277"
 
 
 def test_export_csv_includes_invalid_event_status_and_reason(monkeypatch, tmp_path):
