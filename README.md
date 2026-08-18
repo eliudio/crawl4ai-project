@@ -25,7 +25,15 @@ an easy fix, basically we want events where no location exists to be : unknown l
 
 ## add history
 
+We need to know the contributors to an event.
+And we also like to know the history that makes mass-revert possible, just in case a hacker
+does mass damage and we want to revert. Below are the table changes and extra tables to
+support this functionality
+
+As suggested by grok: 
+
 Here is the concrete schema extension that matches how Wikipedia, Wikidata and OpenStreetMap actually operate.
+
 1. Minimal users table (required foundation)
 ```
 SQLCREATE TABLE users (
