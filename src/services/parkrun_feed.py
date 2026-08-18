@@ -8,9 +8,10 @@ canonical file with everything already resolved (id, coordinates, slug,
 series) - no browser, no LLM, no per-page guessing needed at all to find
 every location.
 
-Only ever reached for the parkrun organiser itself (see listing_crawler.py's
-_is_parkrun) - every other organiser still goes through sitemap_url/
-listing_urls as before.
+Only ever reached for an organiser whose Organiser.handler is "parkrun" (see
+listing_crawler.py's _parkrun_handler, registered under that name in
+discovery_handlers.py's registry) - every other organiser still goes through
+the "default" handler's sitemap/listing_urls mechanism as before.
 """
 
 import requests

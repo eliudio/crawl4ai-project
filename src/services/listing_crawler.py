@@ -6,12 +6,15 @@ No hand-maintained per-site CSS selector config (unlike the old prototype's
 SiteConfig approach, which generated + validated per-site selectors for three
 loading strategies via Selenium). Instead:
 
-- crawl_listing prefers organiser.sitemap_url (a Sitemap: entry read from
-  this organiser's robots.txt by discover_sitemaps.py) over everything else
-  below, when one is known: sitemap_crawler.py reads it directly - a static
-  XML file, no browser/clicking/per-page LLM confirmation needed - and
-  _crawl_from_sitemap only falls through to the mechanisms below when no
-  sitemap is known, or the known one couldn't be resolved into anything.
+- crawl_listing() dispatches to whichever handler Organiser.handler names (see
+  discovery_handlers.py's registry) - every organiser has exactly one, defaulting
+  to "default", this module's own default_handler. That handler prefers reading a
+  sitemap (a Sitemap: entry read from this organiser's robots.txt by
+  discover_sitemaps.py, passed in via handler_params["sitemap_url"]) over
+  everything else below, when one is known: sitemap_crawler.py reads it directly -
+  a static XML file, no browser/clicking/per-page LLM confirmation needed - and
+  _crawl_from_sitemap only falls through to the mechanisms below when no sitemap
+  is known, or the known one couldn't be resolved into anything.
 - Failing that, links are first narrowed down heuristically by domain + junk
   patterns (filter_candidate_links), then the survivors are confirmed as
   actual event detail pages by the LLM (llm_extractor.analyze_listing_page) -
@@ -48,21 +51,9 @@ import requests
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from services import llm_extractor, parkrun_feed, robots, scraper_client, sitemap_crawler
+from services import discovery_handlers, llm_extractor, parkrun_feed, robots, scraper_client, sitemap_crawler
 from services.link_filters import filter_candidate_links
 from services.models import CrawlRun, CrawlRunType, CrawlStatus, Event, Organiser
-
-# parkrun's own homepage is never opened for listing discovery at all - see
-# _crawl_from_parkrun_feed/parkrun_feed.py: its events.json is a direct,
-# structured, worldwide feed of every location, cheaper and more reliable
-# than guessing from an HTML page. Domain-checked rather than a dedicated
-# Organiser column, since parkrun is currently the only organiser fed this
-# way - worth promoting to a real column if a second one ever shows up.
-_PARKRUN_DOMAINS = ("parkrun.org.uk", "parkrun.co.uk")
-
-
-def _is_parkrun(organiser: Organiser) -> bool:
-    return any(domain in organiser.homepage_url for domain in _PARKRUN_DOMAINS)
 
 # Safety caps, not tuning knobs - just there to bound a runaway pagination
 # loop or a "load more" page that never stops offering more.
@@ -498,104 +489,64 @@ def _crawl_one_listing_url(
     return new_urls
 
 
-def _crawl_from_sitemap(session: Session, organiser: Organiser, force: bool = False) -> list[str] | None:
-    """
-    Case 0 (preferred over everything else in this module): organiser.sitemap_url
-    is a direct, complete list of the site's URLs read straight from a static
-    XML file (see sitemap_crawler.py) - no browser, no clicking through
-    load-more/pagination, no per-page LLM confirmation needed. Only reached
-    at all when discover_sitemaps.py has found a Sitemap: entry in this
-    organiser's robots.txt.
+def _filter_new_urls(session: Session, event_urls: list[str], force: bool) -> list[str]:
+    """Shared by every handler below that gets back a whole feed's worth of URLs in one
+    go (sitemap, parkrun) - force=True skips the database lookup entirely and returns
+    every URL as-is, matching local_runner.py's --force-refresh contract exactly."""
+    if force:
+        return event_urls
+    existing_urls = set(session.scalars(select(Event.url).where(Event.url.in_(event_urls))).all())
+    return [u for u in event_urls if u not in existing_urls]
 
-    Returns None (not []) when the sitemap couldn't be resolved into
-    anything - crawl_listing falls back to the normal page-crawling
-    mechanism below in that case, rather than treating a sitemap that
-    turned out to be unusable as "this organiser has zero events". force=True
-    returns every URL in the sitemap, not just ones missing from the database -
-    see crawl_listing.
+
+def _crawl_from_sitemap(session: Session, organiser: Organiser, sitemap_url: str, force: bool = False) -> list[str] | None:
     """
-    event_urls = sitemap_crawler.get_event_urls(organiser.sitemap_url, organiser.homepage_url)
+    A direct, complete list of the site's URLs read straight from a static XML file
+    (see sitemap_crawler.py) - no browser, no clicking through load-more/pagination, no
+    per-page LLM confirmation needed. Only reached at all when handler_params has a
+    sitemap_url (see default_handler) - itself only ever populated once
+    discover_sitemaps.py has found a Sitemap: entry in this organiser's robots.txt.
+
+    Returns None (not []) when the sitemap couldn't be resolved into anything -
+    default_handler falls back to the normal page-crawling mechanism in that case,
+    rather than treating a sitemap that turned out to be unusable as "this organiser
+    has zero events". force=True returns every URL in the sitemap, not just ones
+    missing from the database - see crawl_listing.
+    """
+    event_urls = sitemap_crawler.get_event_urls(sitemap_url, organiser.homepage_url)
     if event_urls is None:
-        print(f"DEBUG sitemap {organiser.sitemap_url!r} unusable, falling back to listing_urls")
+        print(f"DEBUG sitemap {sitemap_url!r} unusable, falling back to listing_urls")
         return None
 
     run = CrawlRun(
         run_type=CrawlRunType.LISTING,
-        target_url=organiser.sitemap_url,
+        target_url=sitemap_url,
         organiser_id=organiser.id,
         status=CrawlStatus.SUCCESS,
         started_at=datetime.now(timezone.utc),
     )
-    existing_urls = set(session.scalars(select(Event.url).where(Event.url.in_(event_urls))).all())
-    new_urls = [u for u in event_urls if u not in existing_urls]
+    new_urls = _filter_new_urls(session, event_urls, force)
     run.detail = f"{len(event_urls)} urls from sitemap, {len(new_urls)} new" + (
         " (force refresh: returning all)" if force else ""
     )
     run.finished_at = datetime.now(timezone.utc)
     session.add(run)
-    return event_urls if force else new_urls
+    return new_urls
 
 
-def _crawl_from_parkrun_feed(session: Session, organiser: Organiser, force: bool = False) -> list[str] | None:
+def default_handler(session: Session, organiser: Organiser, params: dict, force: bool = False) -> list[str]:
     """
-    Same shape/contract as _crawl_from_sitemap - a third, cheaper-still
-    discovery mechanism, only reached for the parkrun organiser itself (see
-    _is_parkrun). See parkrun_feed.py for why its events.json is trusted
-    ahead of ever opening a listing page for this one organiser.
+    The handler every organiser gets unless Organiser.handler names something else -
+    registered under "default" below, looked up the same way as any other handler (see
+    discovery_handlers.py) rather than being crawl_listing()'s own hardcoded fallback.
 
-    Returns None (not []) when the feed couldn't be resolved into anything -
-    crawl_listing falls back to the normal page-crawling mechanism below in
-    that case, same as an unusable sitemap.
+    Prefers reading params["sitemap_url"] (see _crawl_from_sitemap) when present - only
+    falls through to listing_urls/clicking-through when none is known, or the known one
+    couldn't be resolved into anything.
     """
-    event_urls = parkrun_feed.get_event_urls()
-    if event_urls is None:
-        print("DEBUG parkrun feed unusable, falling back to listing_urls")
-        return None
-
-    run = CrawlRun(
-        run_type=CrawlRunType.LISTING,
-        target_url=parkrun_feed.EVENTS_JSON_URL,
-        organiser_id=organiser.id,
-        status=CrawlStatus.SUCCESS,
-        started_at=datetime.now(timezone.utc),
-    )
-    existing_urls = set() if force else set(
-        session.scalars(select(Event.url).where(Event.url.in_(event_urls))).all()
-    )
-    new_urls = [u for u in event_urls if u not in existing_urls]
-    run.detail = f"{len(event_urls)} urls from parkrun feed, {len(new_urls)} new" + (
-        " (force refresh: returning all)" if force else ""
-    )
-    run.finished_at = datetime.now(timezone.utc)
-    session.add(run)
-    return event_urls if force else new_urls
-
-
-def crawl_listing(session: Session, organiser: Organiser, force: bool = False) -> list[str]:
-    """
-    Crawl one organiser's listing page(s). Returns the event URLs that are
-    new (not already stored) so the caller can decide how to hand them off
-    (Pub/Sub in production, direct in-process call for local runs) - or, when
-    force=True, every event URL currently found for this organiser regardless
-    of whether it's already stored, for a manual full refresh (see
-    local_runner.py's --force-refresh): the caller is expected to re-crawl
-    each one with event_crawler.crawl_event(check_mode="force") so an
-    already-stored URL gets replaced in place rather than skipped.
-
-    Prefers reading organiser.sitemap_url (see _crawl_from_sitemap) over
-    everything below it when one is known, then parkrun's own events.json
-    feed for the parkrun organiser specifically (see _crawl_from_parkrun_feed) -
-    only falls through to listing_urls/clicking-through when neither structured
-    source is known/available, or the known one couldn't be resolved into
-    anything.
-    """
-    if organiser.sitemap_url:
-        event_urls = _crawl_from_sitemap(session, organiser, force=force)
-        if event_urls is not None:
-            return event_urls
-
-    if _is_parkrun(organiser):
-        event_urls = _crawl_from_parkrun_feed(session, organiser, force=force)
+    sitemap_url = params.get("sitemap_url")
+    if sitemap_url:
+        event_urls = _crawl_from_sitemap(session, organiser, sitemap_url, force=force)
         if event_urls is not None:
             return event_urls
 
@@ -612,3 +563,66 @@ def crawl_listing(session: Session, organiser: Organiser, force: bool = False) -
         new_urls.extend(_crawl_one_listing_url(session, organiser, listing_url, seen, force=force))
 
     return new_urls
+
+
+def _parkrun_handler(session: Session, organiser: Organiser, params: dict, force: bool = False) -> list[str]:
+    """
+    Registered under "parkrun" below - events.json is a direct, structured, worldwide
+    feed of every location (see parkrun_feed.py), cheaper and more reliable than
+    guessing from an HTML page, so parkrun's own homepage is never opened for listing
+    discovery at all.
+
+    Deliberately does NOT fall back to default_handler when the feed is unusable -
+    unlike a sitemap, parkrun's homepage isn't a listing page in any sense
+    default_handler's LLM-guessing could make sense of; falling back to it would just
+    burn an LLM call for nothing. Returns [] in that case instead, same as any other
+    organiser whose listing genuinely has nothing crawlable this run.
+    """
+    event_urls = parkrun_feed.get_event_urls(country_code=params.get("country_code", parkrun_feed.UK_COUNTRY_CODE))
+    if event_urls is None:
+        print("DEBUG parkrun feed unusable this run")
+        return []
+
+    run = CrawlRun(
+        run_type=CrawlRunType.LISTING,
+        target_url=parkrun_feed.EVENTS_JSON_URL,
+        organiser_id=organiser.id,
+        status=CrawlStatus.SUCCESS,
+        started_at=datetime.now(timezone.utc),
+    )
+    new_urls = _filter_new_urls(session, event_urls, force)
+    run.detail = f"{len(event_urls)} urls from parkrun feed, {len(new_urls)} new" + (
+        " (force refresh: returning all)" if force else ""
+    )
+    run.finished_at = datetime.now(timezone.utc)
+    session.add(run)
+    return new_urls
+
+
+discovery_handlers.register_handler("default", default_handler)
+discovery_handlers.register_handler("parkrun", _parkrun_handler)
+
+
+def crawl_listing(session: Session, organiser: Organiser, force: bool = False) -> list[str]:
+    """
+    Crawl one organiser's listing page(s), by dispatching to whichever handler
+    Organiser.handler names (see discovery_handlers.py) - every organiser has exactly
+    one, defaulting to "default" (this module's own historical sitemap-then-LLM-
+    guessed behaviour, now just one named handler among others, e.g. "parkrun").
+
+    Returns the event URLs that are new (not already stored) so the caller can decide
+    how to hand them off (Pub/Sub in production, direct in-process call for local
+    runs) - or, when force=True, every event URL currently found for this organiser
+    regardless of whether it's already stored, for a manual full refresh (see
+    local_runner.py's --force-refresh): the caller is expected to re-crawl each one
+    with event_crawler.crawl_event(check_mode="force") so an already-stored URL gets
+    replaced in place rather than skipped.
+    """
+    handler = discovery_handlers.get_handler(organiser.handler)
+    if handler is None:
+        print(
+            f"WARNING: organiser {organiser.id} ({organiser.name}) has unknown "
+            f"handler {organiser.handler!r} - falling back to 'default'"
+        )
+        handler = discovery_handlers.get_handler("default")
+    return handler(session, organiser, organiser.handler_params or {}, force)

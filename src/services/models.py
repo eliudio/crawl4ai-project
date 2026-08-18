@@ -136,13 +136,27 @@ class Organiser(Base):
     # until discover_listing_urls() (see llm_extractor.py) has run once.
     listing_urls: Mapped[list[str]] = mapped_column(ARRAY(String(1024)), default=list)
 
-    # A "Sitemap:" entry read from this organiser's robots.txt (see
-    # discover_sitemaps.py) - when present, listing_crawler.py prefers
-    # reading this directly (sitemap_crawler.py) over opening listing_urls
-    # and clicking through load-more/pagination, since it's a direct,
-    # complete list of the site's URLs with no browser/LLM interaction
-    # needed to obtain it. Null until discover_sitemaps.py has found one.
-    sitemap_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Which listing-discovery mechanism this organiser uses - looked up in
+    # discovery_handlers.py's registry by listing_crawler.py's crawl_listing(), the
+    # one place that dispatches on it. "default" (the vast majority of organisers)
+    # covers everything listing_crawler.py always did: prefer a sitemap when
+    # handler_params has one, otherwise guess via LLM/pagination/"load more". Every
+    # organiser has exactly one handler, never null - there's no separate "normal vs
+    # custom" tier; "default" is just as much a named, registered handler as
+    # "parkrun" is, not an implicit fallback. server_default (not just the Python-
+    # side default= below) so this NOT NULL column can still be added to an
+    # already-existing `organisers` table by db.py's _add_missing_columns - see
+    # Event.occurrence's own comment for why a plain default= alone isn't enough.
+    handler: Mapped[str] = mapped_column(String(64), default="default", server_default="default")
+    # Optional, handler-specific config - e.g. the "default" handler's own sitemap
+    # URL (see tools/seed_organisers.py: kept as its own flat "sitemap_url" column in
+    # the seed CSV itself, specifically so discover_sitemaps.py - a plain
+    # csv.DictWriter script - never has to parse/merge JSON just to set one string;
+    # only merged into this dict at seed time), or "parkrun"'s own country_code.
+    # Each handler is responsible for reading whatever keys it expects out of this,
+    # with its own sensible defaults - deliberately not a per-handler schema, since
+    # this is expected to stay a small, hand-maintained set of special cases.
+    handler_params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Only "organiser" rows are ever fed to the event-crawl queue. Rows
     # discovered on aggregator/platform sites are recorded for provenance
@@ -209,7 +223,14 @@ class Event(Base):
     # _add_missing_columns - a plain default= only applies to rows the ORM itself
     # inserts, never to backfilling existing rows via ALTER TABLE ADD COLUMN.
     occurrence: Mapped[Occurrence] = mapped_column(
-        Enum(Occurrence, name="event_occurrence"),
+        # values_callable: without it, SQLAlchemy stores each member's `.name`
+        # (ONE_OFF, DAILY, ...) as the Postgres enum's labels, not its `.value`
+        # ("one_off", "daily", ...) - which is what server_default below (and
+        # everywhere else this enum's string form is used - llm_extractor's
+        # schema, event_crawler's Occurrence(fields.get("occurrence"))) treats
+        # as canonical. Left mismatched, CREATE TABLE's own DEFAULT 'one_off'
+        # fails validation against the type it just created from names.
+        Enum(Occurrence, name="event_occurrence", values_callable=lambda enum_cls: [e.value for e in enum_cls]),
         default=Occurrence.ONE_OFF,
         server_default=Occurrence.ONE_OFF.value,
     )

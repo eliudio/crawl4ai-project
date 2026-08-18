@@ -14,7 +14,7 @@ ALTER TABLE ... ADD COLUMN support is what _add_missing_columns relies on.
 from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine, inspect
 
 from services import db
-from services.models import Base, Event
+from services.models import Base, Event, Organiser
 
 
 def _make_engine():
@@ -179,6 +179,40 @@ def test_regression_repeating_events_columns_and_table_added_to_preexisting_db()
     columns = {c["name"] for c in inspect(engine).get_columns("events")}
     assert new_occurrence_columns <= columns
     assert "event_occurrences" in inspect(engine).get_table_names()
+
+
+def test_regression_organiser_handler_added_and_backfilled_on_preexisting_table():
+    # Same incident class again, for Organiser.handler specifically: it's NOT NULL
+    # with only a Python-side default= (same shape Event.occurrence needed a
+    # server_default for above) - confirmed needed in practice when custom_handler
+    # became the always-present, non-nullable `handler` column.
+    engine = _make_engine()
+
+    new_columns = {"handler", "handler_params"}
+    pre_existing_metadata = MetaData()
+    old_columns = [
+        # listing_urls (Postgres ARRAY) excluded too - same SQLite limitation as
+        # everywhere else in this file; irrelevant to what this test checks.
+        Column(c.name, c.type, nullable=c.nullable)
+        for c in Organiser.__table__.columns
+        if c.name not in new_columns and c.name != "listing_urls"
+    ]
+    Table("organisers", pre_existing_metadata, *old_columns)
+    pre_existing_metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO organisers (id, name, homepage_url, source_type, active, created_at, updated_at) "
+            "VALUES (1, 'Acme', 'https://acme.example/', 'organiser', 1, '2026-01-01', '2026-01-01')"
+        )
+
+    db._add_missing_columns(engine)
+
+    columns = {c["name"] for c in inspect(engine).get_columns("organisers")}
+    assert "handler" in columns
+    assert "handler_params" in columns
+    with engine.connect() as conn:
+        handler = conn.exec_driver_sql("SELECT handler FROM organisers WHERE id = 1").scalar()
+    assert handler == "default"
 
 
 def test_init_db_calls_add_missing_columns(monkeypatch):

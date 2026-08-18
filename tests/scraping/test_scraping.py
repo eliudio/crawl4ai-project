@@ -403,85 +403,198 @@ def test_crawl_one_listing_url_force_still_respects_in_run_dedup(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# crawl_listing's discovery-mechanism dispatch: sitemap, then parkrun's own
-# events.json feed (see parkrun_feed.py/_is_parkrun), then the normal LLM-
-# guessed listing_urls fallback - each preferred over the next when usable.
+# crawl_listing's generic dispatch (see discovery_handlers.py): every organiser
+# has exactly one Organiser.handler, looked up and called - no hardcoded
+# cascade/special-casing left in crawl_listing() itself.
 # ---------------------------------------------------------------------------
 
-def test_is_parkrun_detects_known_domains():
-    assert listing_crawler._is_parkrun(Organiser(homepage_url="https://www.parkrun.org.uk/")) is True
-    assert listing_crawler._is_parkrun(Organiser(homepage_url="https://www.parkrun.co.uk/")) is True
-    assert listing_crawler._is_parkrun(Organiser(homepage_url="https://www.runthrough.co.uk/")) is False
-
-
-def test_crawl_listing_uses_parkrun_feed_for_the_parkrun_organiser(monkeypatch):
-    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
+def test_crawl_listing_dispatches_to_the_registered_handler(monkeypatch):
+    organiser = Organiser(homepage_url="https://example.com/")
     organiser.id = 1
-    organiser.sitemap_url = None
+    organiser.handler = "parkrun"
+    organiser.handler_params = {"country_code": 1}
+    session = _FakeExistingUrlsSession([])
+    captured = {}
+
+    def fake_handler(session_arg, organiser_arg, params, force):
+        captured["args"] = (session_arg, organiser_arg, params, force)
+        return ["https://example.com/handled/"]
+
+    monkeypatch.setattr(listing_crawler.discovery_handlers, "get_handler", lambda name: fake_handler if name == "parkrun" else None)
+
+    urls = listing_crawler.crawl_listing(session, organiser, force=True)
+
+    assert urls == ["https://example.com/handled/"]
+    assert captured["args"] == (session, organiser, {"country_code": 1}, True)
+
+
+def test_crawl_listing_passes_empty_dict_when_no_handler_params(monkeypatch):
+    organiser = Organiser(homepage_url="https://example.com/")
+    organiser.id = 1
+    organiser.handler = "default"
+    organiser.handler_params = None
+    session = _FakeExistingUrlsSession([])
+    captured = {}
+
+    monkeypatch.setattr(
+        listing_crawler.discovery_handlers, "get_handler",
+        lambda name: (lambda s, o, params, force: captured.setdefault("params", params) and []),
+    )
+
+    listing_crawler.crawl_listing(session, organiser)
+
+    assert captured["params"] == {}
+
+
+def test_crawl_listing_falls_back_to_default_for_unknown_handler_name(monkeypatch, capsys):
+    # get_handler("no-such-handler") returns None; get_handler("default") must still
+    # resolve to a real handler - monkeypatching listing_crawler.default_handler
+    # wouldn't reach this at all, since the registry already holds a direct
+    # reference to the original function from module-load time, not a live lookup
+    # by name - so the fallback itself is stubbed via the registry lookup instead.
+    organiser = Organiser(homepage_url="https://example.com/", name="Acme")
+    organiser.id = 1
+    organiser.handler = "no-such-handler"
+    organiser.handler_params = None
+    session = _FakeExistingUrlsSession([])
+
+    def fake_get_handler(name):
+        if name == "default":
+            return lambda s, o, params, force: ["https://example.com/default-used/"]
+        return None
+
+    monkeypatch.setattr(listing_crawler.discovery_handlers, "get_handler", fake_get_handler)
+
+    urls = listing_crawler.crawl_listing(session, organiser)
+
+    assert urls == ["https://example.com/default-used/"]
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "no-such-handler" in out
+    assert "Acme" in out
+
+
+# ---------------------------------------------------------------------------
+# default_handler - today's historical sitemap-then-LLM-guessed behaviour,
+# now just one named, registered handler among others (see Organiser.handler).
+# ---------------------------------------------------------------------------
+
+def test_default_handler_uses_sitemap_param_when_present(monkeypatch):
+    organiser = Organiser(homepage_url="https://example.com/")
+    organiser.id = 1
     session = _FakeExistingUrlsSession([])
 
     monkeypatch.setattr(
-        listing_crawler.parkrun_feed, "get_event_urls",
-        lambda: ["https://www.parkrun.org.uk/bushy/", "https://www.parkrun.org.uk/southwark/"],
+        listing_crawler, "_crawl_from_sitemap",
+        lambda session_arg, organiser_arg, sitemap_url, force=False: ["https://example.com/from-sitemap/"] if sitemap_url == "https://example.com/sitemap.xml" else None,
     )
     monkeypatch.setattr(
         listing_crawler, "_discover_listing_urls",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not fall back to LLM-guessed discovery")),
     )
 
-    urls = listing_crawler.crawl_listing(session, organiser)
+    urls = listing_crawler.default_handler(session, organiser, {"sitemap_url": "https://example.com/sitemap.xml"})
+
+    assert urls == ["https://example.com/from-sitemap/"]
+
+
+def test_default_handler_falls_back_to_listing_urls_when_sitemap_unusable(monkeypatch):
+    organiser = Organiser(homepage_url="https://example.com/")
+    organiser.id = 1
+    organiser.listing_urls = []
+    session = _FakeExistingUrlsSession([])
+
+    monkeypatch.setattr(listing_crawler, "_crawl_from_sitemap", lambda *a, **k: None)
+    monkeypatch.setattr(listing_crawler, "_discover_listing_urls", lambda session_arg, organiser_arg: [])
+
+    urls = listing_crawler.default_handler(session, organiser, {"sitemap_url": "https://example.com/sitemap.xml"})
+
+    assert urls == []  # nothing discovered either - just confirms it fell through without crashing
+
+
+def test_default_handler_skips_sitemap_entirely_when_no_param(monkeypatch):
+    organiser = Organiser(homepage_url="https://example.com/")
+    organiser.id = 1
+    organiser.listing_urls = []
+    session = _FakeExistingUrlsSession([])
+
+    monkeypatch.setattr(
+        listing_crawler, "_crawl_from_sitemap",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not attempt a sitemap with no sitemap_url param")),
+    )
+    monkeypatch.setattr(listing_crawler, "_discover_listing_urls", lambda session_arg, organiser_arg: [])
+
+    listing_crawler.default_handler(session, organiser, {})  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# _parkrun_handler - registered under "parkrun", see parkrun_feed.py for why
+# events.json is trusted ahead of ever opening a listing page for this source.
+# ---------------------------------------------------------------------------
+
+def test_parkrun_handler_returns_feed_urls(monkeypatch):
+    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
+    organiser.id = 1
+    session = _FakeExistingUrlsSession([])
+
+    monkeypatch.setattr(
+        listing_crawler.parkrun_feed, "get_event_urls",
+        lambda country_code=97: ["https://www.parkrun.org.uk/bushy/", "https://www.parkrun.org.uk/southwark/"],
+    )
+
+    urls = listing_crawler._parkrun_handler(session, organiser, {})
 
     assert urls == ["https://www.parkrun.org.uk/bushy/", "https://www.parkrun.org.uk/southwark/"]
 
 
-def test_crawl_listing_falls_back_when_parkrun_feed_unusable(monkeypatch):
+def test_parkrun_handler_respects_country_code_param(monkeypatch):
+    organiser = Organiser(homepage_url="https://www.parkrun.us/")
+    organiser.id = 1
+    session = _FakeExistingUrlsSession([])
+    captured = {}
+
+    def fake_get_event_urls(country_code=97):
+        captured["country_code"] = country_code
+        return []
+
+    monkeypatch.setattr(listing_crawler.parkrun_feed, "get_event_urls", fake_get_event_urls)
+
+    listing_crawler._parkrun_handler(session, organiser, {"country_code": 1})
+
+    assert captured["country_code"] == 1
+
+
+def test_parkrun_handler_returns_empty_list_with_no_fallback_when_feed_unusable(monkeypatch):
     organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
     organiser.id = 1
-    organiser.sitemap_url = None
-    organiser.listing_urls = []
     session = _FakeExistingUrlsSession([])
 
-    monkeypatch.setattr(listing_crawler.parkrun_feed, "get_event_urls", lambda: None)
-    monkeypatch.setattr(listing_crawler, "_discover_listing_urls", lambda session, organiser: [])
-
-    urls = listing_crawler.crawl_listing(session, organiser)
-
-    assert urls == []  # no listing_urls discovered either - just confirms it didn't crash/short-circuit wrongly
-
-
-def test_crawl_listing_prefers_sitemap_over_parkrun_feed(monkeypatch):
-    # Not a realistic combination in practice, but confirms the stated precedence
-    # (sitemap first) rather than leaving it to incidental code order.
-    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
-    organiser.id = 1
-    organiser.sitemap_url = "https://www.parkrun.org.uk/sitemap.xml"
-    session = _FakeExistingUrlsSession([])
-
-    monkeypatch.setattr(listing_crawler, "_crawl_from_sitemap", lambda *a, **k: ["https://www.parkrun.org.uk/from-sitemap/"])
+    monkeypatch.setattr(listing_crawler.parkrun_feed, "get_event_urls", lambda country_code=97: None)
     monkeypatch.setattr(
-        listing_crawler.parkrun_feed, "get_event_urls",
-        lambda: (_ for _ in ()).throw(AssertionError("should not reach the parkrun feed when a sitemap resolved first")),
+        listing_crawler, "default_handler",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("parkrun handler must not fall back to default_handler")),
     )
 
-    urls = listing_crawler.crawl_listing(session, organiser)
+    urls = listing_crawler._parkrun_handler(session, organiser, {})
 
-    assert urls == ["https://www.parkrun.org.uk/from-sitemap/"]
+    assert urls == []
 
 
-def test_crawl_listing_non_parkrun_organiser_never_touches_parkrun_feed(monkeypatch):
-    organiser = Organiser(homepage_url="https://www.runthrough.co.uk/")
-    organiser.id = 1
-    organiser.sitemap_url = None
-    organiser.listing_urls = []
-    session = _FakeExistingUrlsSession([])
+# ---------------------------------------------------------------------------
+# _filter_new_urls - shared by any handler that gets back a whole feed's
+# worth of URLs in one go (sitemap, parkrun).
+# ---------------------------------------------------------------------------
 
-    monkeypatch.setattr(
-        listing_crawler.parkrun_feed, "get_event_urls",
-        lambda: (_ for _ in ()).throw(AssertionError("should not call the parkrun feed for a non-parkrun organiser")),
-    )
-    monkeypatch.setattr(listing_crawler, "_discover_listing_urls", lambda session, organiser: [])
+def test_filter_new_urls_excludes_existing_by_default():
+    session = _FakeExistingUrlsSession(["https://example.com/a"])
+    urls = listing_crawler._filter_new_urls(session, ["https://example.com/a", "https://example.com/b"], force=False)
+    assert urls == ["https://example.com/b"]
 
-    listing_crawler.crawl_listing(session, organiser)  # must not raise
+
+def test_filter_new_urls_returns_everything_when_forced():
+    session = _FakeExistingUrlsSession(["https://example.com/a"])
+    urls = listing_crawler._filter_new_urls(session, ["https://example.com/a", "https://example.com/b"], force=True)
+    assert urls == ["https://example.com/a", "https://example.com/b"]
 
 
 # ---------------------------------------------------------------------------
