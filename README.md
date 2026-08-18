@@ -7,14 +7,6 @@ The wiki for race events
 
 or plebbys.com or pleppys.com or plebies.com
 
-## Bug
-
-I think there's a bug in the parkrun handler: when we're a bot, not a human, we
-should respect the robots.txt file. Based on this, I think retrieving the json 
-file should not be possible, should it.
-
-Fix it, if this is true. Else tell me
-
 ## OpenStreetMap
 AI: Try using OpenStreetMap data + community layer as source of event data
 Using the Overpass API with targeted queries is the intended and accepted way to pull specific features such as 
@@ -30,7 +22,6 @@ AI: It seems some events have no location, yet the location is given. For exampl
 https://www.zigzagrunning.co.uk/event-details/two-hundred-miles-challenge is determined to be www.evententry.com
 That makes no sense. Perhaps this is the best we can do, if we don't want to spend too much. But perhaps this is 
 an easy fix, basically we want events where no location exists to be : unknown location
-
 
 ## add history
 

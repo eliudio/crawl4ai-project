@@ -9,6 +9,7 @@ from datetime import date
 import pytest
 
 from services import parkrun_feed
+from services.config import settings
 
 
 class _FakeResponse:
@@ -42,6 +43,13 @@ _SAMPLE_FEED = {
 @pytest.fixture(autouse=True)
 def _allow_robots(monkeypatch):
     monkeypatch.setattr(parkrun_feed.robots, "is_allowed", lambda url, registrator="bot": True)
+    # _country_features's own explicit "bot" refusal (see its own docstring - parkrun's
+    # stated anti-scraping policy, independent of whatever images.parkrun.com's own
+    # robots.txt happens to say) is gated on this same flag - disabled here so the
+    # tests below (about feed-parsing logic, not this policy decision) keep exercising
+    # the default registrator="bot" the way they did before that refusal existed. The
+    # refusal itself is tested directly, with this flag restored, further down.
+    monkeypatch.setattr(settings, "respect_robots_txt", False)
 
 
 def test_builds_urls_for_the_requested_country_only(monkeypatch):
@@ -73,6 +81,54 @@ def test_registrator_forwarded_to_robots_is_allowed(monkeypatch):
     parkrun_feed.get_event_urls(country_code=97, registrator="jane_doe")
 
     assert captured["registrator"] == "jane_doe"
+
+
+# ---------------------------------------------------------------------------
+# _country_features's own "bot" refusal - see its own docstring: parkrun's stated
+# anti-scraping policy governs here, independent of whatever images.parkrun.com's own
+# (missing) robots.txt happens to say. respect_robots_txt is restored to True in each
+# of these (undoing the autouse fixture's own override above), since this refusal is
+# specifically gated on that flag being on.
+# ---------------------------------------------------------------------------
+
+def test_bot_registrator_refused_regardless_of_robots_is_allowed(monkeypatch, capsys):
+    monkeypatch.setattr(settings, "respect_robots_txt", True)
+    # Even a robots.is_allowed that would say "yes, go ahead" must not matter here -
+    # the refusal happens before that check is ever reached.
+    monkeypatch.setattr(parkrun_feed.robots, "is_allowed", lambda url, registrator="bot": True)
+    monkeypatch.setattr(
+        parkrun_feed.requests, "get",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("bot must not fetch the feed at all")),
+    )
+
+    assert parkrun_feed.get_event_urls(registrator="bot") is None
+    assert parkrun_feed.get_events(registrator="bot") is None
+    out = capsys.readouterr().out
+    assert "ROBOTS-SKIP" in out
+    assert "parkrun.com/scraping" in out
+
+
+def test_non_bot_registrator_still_fetches_with_respect_robots_txt_on(monkeypatch):
+    monkeypatch.setattr(settings, "respect_robots_txt", True)
+    monkeypatch.setattr(parkrun_feed.robots, "is_allowed", lambda url, registrator="bot": True)
+    monkeypatch.setattr(parkrun_feed.requests, "get", lambda *a, **kw: _FakeResponse(_SAMPLE_FEED))
+
+    # A real, obtained authorisation (a non-"bot" registrator) is unaffected by this
+    # refusal - only "bot" (an unattended, unauthorised crawl) is ever blocked by it.
+    urls = parkrun_feed.get_event_urls(country_code=97, registrator="jane_doe")
+
+    assert urls == ["https://www.parkrun.org.uk/bushy/", "https://www.parkrun.org.uk/southwark/"]
+
+
+def test_bot_registrator_allowed_when_respect_robots_txt_disabled(monkeypatch):
+    # The global kill switch (tests only, in practice) is honoured the same way
+    # robots.is_allowed() itself already honours it.
+    monkeypatch.setattr(settings, "respect_robots_txt", False)
+    monkeypatch.setattr(parkrun_feed.requests, "get", lambda *a, **kw: _FakeResponse(_SAMPLE_FEED))
+
+    assert parkrun_feed.get_event_urls(country_code=97, registrator="bot") == [
+        "https://www.parkrun.org.uk/bushy/", "https://www.parkrun.org.uk/southwark/",
+    ]
 
 
 def test_returns_none_when_robots_disallows(monkeypatch, capsys):

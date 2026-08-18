@@ -39,7 +39,27 @@ def _country_features(country_code: int, registrator: str) -> tuple[str, list[di
     any fetch/parse failure, or when the country/feed shape isn't what's expected.
     Only features with both a countrycode match and a non-empty eventname are
     included, since neither caller can build anything useful without one.
+
+    Confirmed in practice: images.parkrun.com/robots.txt itself just 403s with a bare
+    S3 "AccessDenied" body, not real robots.txt content - robots.is_allowed() below
+    would call that "no rules to enforce" (the same reasonable default it uses for
+    any organiser's WAF-blocked robots.txt) and let a "bot" registrator through. That
+    would be wrong here specifically: parkrun's own MAIN site states its real policy
+    unambiguously (www.parkrun.org.uk/robots.txt: "We request that automated scraping
+    does not take place", linking to parkrun.com/scraping: "parkrun does not condone
+    the scraping of our data") - that governs, not a coincidental HTTP status on one
+    particular asset-hosting subdomain that happens to have no robots.txt of its own.
+    An unattended "bot" registrator has no business fetching this feed at all - only a
+    registrator override (real, separately obtained authorisation - see
+    Organiser.registrator's own docstring) does, which is exactly what this check
+    leaves untouched: it only ever fires for "bot", the same registrator
+    robots.is_allowed() itself would otherwise have to fetch/parse a robots.txt for -
+    settings.respect_robots_txt's own kill switch (tests) is honoured the same way.
     """
+    if registrator == "bot" and settings.respect_robots_txt:
+        print(f"ROBOTS-SKIP: {EVENTS_JSON_URL} (parkrun feed - parkrun's own stated anti-scraping policy, see parkrun.com/scraping)")
+        return None
+
     if not robots.is_allowed(EVENTS_JSON_URL, registrator=registrator):
         print(f"ROBOTS-SKIP: {EVENTS_JSON_URL} (parkrun feed)")
         return None
