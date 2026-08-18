@@ -547,3 +547,8 @@ Then:
 * Nice Work,https://www.nice-work.org.uk/
 * Rocket Race
 * Curley's Leisure / The ROC Triathlon
+
+
+## REMARKS
+
+* When using a registrator other than "bot", parkrun handler will ignore robots.txt. It will not be scraping the pages, but it will use the json file with all events and construct the events with that. The events will be registered with the registrator specified. This is "pretend" pleb registration.
