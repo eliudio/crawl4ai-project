@@ -18,12 +18,26 @@ Don't change anything, just answer to see if OSM has properly populated some eve
 for querying. Just brainstorming.
 
 ## bug
-It seems some events have no location, yet the location is given. For example, the location for
+AI: It seems some events have no location, yet the location is given. For example, the location for
 https://www.zigzagrunning.co.uk/event-details/two-hundred-miles-challenge is determined to be www.evententry.com
 That makes no sense. Perhaps this is the best we can do, if we don't want to spend too much. But perhaps this is 
 an easy fix, basically we want events where no location exists to be : unknown location
 
-## add a reporter field to the events, event_distances, event_occurrences and organisers
+## add a reporter field to the events, event_distances, event_occurrences and organisers + force parkrun to be populated regardless of robots.txt
+AI: 
+1) add to the orgainsers_seed.csv: add a field registrator and populate this field with "bot" across the board
+2) pass this entry registrator to the handler as an argument. Use it in the handler when creating 
+an entry in events, event_distances, event_occurrences and organisers
+3) if the registrator is "bot" then the handler must check robots.txt and all handlers should respect it, in this case, 
+i.e when registrator is "bot". If not, then skip checking robots.txt. So this is the case for the parkrun handler as
+well as all other handlers
+4) the parkrun handler should have a configurable parameter to override registrator it uses. The parkrun handler 
+should override the registrator before anything else, i.e. before the logic if or if not robots.txt needs to be respected
+5) add to the readme some guidelines why this configuration for parkrun handler exists, basically:
+We must run the parkrun handler / seeding with the configurable parameter of the registrator to be some human, not "bot"
+This to force ignoring robots.txt and to have an actual user being the responsible for registering the event.
+Hence we do not want to run this seed script too often, so that changes on the site aren't automatically populated
+and the scraping isn't detected
 
 ## add history
 
@@ -127,23 +141,6 @@ ALTER TABLE contributions
 * The original malicious contributions stay in the table forever; they are simply no longer the current version of the entity.
 
 This is exactly the pattern used by MediaWiki (revision history + rollback) and OpenStreetMap (versioned objects + changeset reverts): the live data is restored, the full provenance remains, and a single user’s damage can be undone cleanly while preserving everyone else’s work.
-
-## parkrun robots.txt doesn't allow automated populating of data
-AI: 
-1) add to the orgainsers_seed.csv: add a field registrator and populate this field with "bot" across the board
-2) pass this entry registrator to the handler as an argument. Use it in the handler when creating 
-an entry in events, event_distances, event_occurrences and organisers
-3) if the registrator is "bot" then the handler must check robots.txt and all handlers should respect it, in this case, 
-i.e when registrator is "bot". If not, then skip checking robots.txt. So this is the case for the parkrun handler as
-well as all other handlers
-4) the parkrun handler should have a configurable parameter to override registrator it uses. The parkrun handler 
-should override the registrator before anything else, i.e. before the logic if or if not robots.txt needs to be respected
-
-Devs:
-We must run the parkrun handler / seeding with the configurable parameter of the registrator to be some human, not "bot"
-This to force ignoring robots.txt and to have an actual user being the responsible for registering the event.
-Hence we do not want to run this seed script too often, so that changes on the site aren't automatically populated
-and the scraping isn't detected
 
 ## APP: event creation
 We will want to be able to easily create, through the interface of the app weekly events

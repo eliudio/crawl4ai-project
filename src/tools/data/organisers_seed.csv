@@ -1,4 +1,5 @@
 name,listing_urls,homepage_url,discovered_via,sitemap_url,handler,handler_params
+parkrun UK,[],https://www.parkrun.org.uk/,manual,,parkrun,
 RunThrough Events,"[""https://www.runthrough.co.uk/events-timeline""]",https://www.runthrough.co.uk/,findarace.com,https://www.runthrough.co.uk/sitemap.xml,,
 Cancer Research UK - Race for Life,"[""https://raceforlife.cancerresearchuk.org/find-an-event?size=n_200_n&sort-field=eventDate""]",https://raceforlife.cancerresearchuk.org/,findarace.com,https://raceforlife.cancerresearchuk.org/sitemap.xml,,
 Zig Zag Running,"[""https://www.zigzagrunning.co.uk/""]",https://www.zigzagrunning.co.uk/,findarace.com,https://www.zigzagrunning.co.uk/sitemap.xml,,
@@ -170,4 +171,3 @@ XTERRA,[],https://www.xterraplanet.com/,racecheck.com,,,
 The Wolf Run,[],https://www.thewolfrun.com/,racecheck.com,,,
 Maverick Race,[],https://www.maverick-race.com/,racecheck.com,,,
 Wild Deer Events,[],https://www.wilddeerevents.co.uk/,racecheck.com,,,
-parkrun UK,[],https://www.parkrun.org.uk/,manual,,parkrun,
