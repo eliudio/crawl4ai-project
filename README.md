@@ -1,7 +1,5 @@
 ﻿# TODOs
 
-## Why is it that the export of all events, except parkrun doesn't have an embedded google map?
-
 ## name and slogan
 
 plebys.com - For the plebs, by the plebs, for free, always 
@@ -197,12 +195,8 @@ maybe even have some wizard to register races, one of these wizard is supporting
 ## code cleanup
 
 Ask AI to cleanup
-1) what is each file and is it still relevant? for example, is grok/key.py still being used? remember: everything
-   we currently do starts with scripts from services or tools. So I guess, I'm basically asking if directory 
-   grok and events are still relevant
-2) introduce code coverage tool
-3) write unit tests to cover 100% of code
-4) restructure the code, new directory structure
+1) introduce code coverage tool / write unit tests to cover 100% of code
+2) restructure the code, new directory structure
 - introduce a subdirectory for common, local and server
 - put specific python scripts in these directories, specific to these purposes, common, local and serve
 - create directories tools/export with export scripts
