@@ -151,3 +151,77 @@ def test_event_location_returns_none_when_nothing_available(monkeypatch):
     )
 
     assert geocoding_client.geocode_event_location(None, None, None) is None
+
+
+def test_event_location_falls_through_to_next_field_when_first_fails(monkeypatch):
+    # The bug this fixes: a non-blank location that Nominatim can't resolve must not
+    # give up outright - start_location/finish_location are still worth trying.
+    calls = []
+
+    def fake_geocode(address):
+        calls.append(address)
+        return None if address == "Main Venue" else (1.0, 2.0)
+
+    monkeypatch.setattr(geocoding_client, "geocode", fake_geocode)
+
+    result = geocoding_client.geocode_event_location(
+        location="Main Venue", start_location="Start Point", finish_location="Finish Point"
+    )
+
+    assert result == (1.0, 2.0)
+    assert calls == ["Main Venue", "Start Point"]
+
+
+# ---------------------------------------------------------------------------
+# UK postcode fallback - the reported case: "Bakewell Showground, Bakewell. DE45 1AH"
+# fails outright against Nominatim (confirmed against the real API - "Bakewell
+# Showground" isn't indexed as a place at all), but "DE45 1AH" alone, extracted from
+# that same string, resolves fine.
+# ---------------------------------------------------------------------------
+
+def test_event_location_retries_with_extracted_postcode_when_full_string_fails(monkeypatch):
+    calls = []
+
+    def fake_geocode(address):
+        calls.append(address)
+        return (53.2128596, -1.6693773) if address == "DE45 1AH" else None
+
+    monkeypatch.setattr(geocoding_client, "geocode", fake_geocode)
+
+    result = geocoding_client.geocode_event_location(
+        location="Bakewell Showground, Bakewell. DE45 1AH", start_location=None, finish_location=None,
+    )
+
+    assert result == (53.2128596, -1.6693773)
+    assert calls == ["Bakewell Showground, Bakewell. DE45 1AH", "DE45 1AH"]
+
+
+def test_event_location_does_not_retry_postcode_when_candidate_is_already_bare_postcode(monkeypatch):
+    calls = []
+    monkeypatch.setattr(geocoding_client, "geocode", lambda address: calls.append(address) or None)
+
+    geocoding_client.geocode_event_location(location="DE45 1AH", start_location=None, finish_location=None)
+
+    # Extracting "DE45 1AH" from "DE45 1AH" would just be the same call again - skipped.
+    assert calls == ["DE45 1AH"]
+
+
+def test_event_location_falls_back_to_next_field_when_no_postcode_found_either(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        geocoding_client, "geocode",
+        lambda address: calls.append(address) or (None if address == "Some Venue With No Postcode" else (1.0, 2.0)),
+    )
+
+    result = geocoding_client.geocode_event_location(
+        location="Some Venue With No Postcode", start_location="Start Point", finish_location=None,
+    )
+
+    assert result == (1.0, 2.0)
+    assert calls == ["Some Venue With No Postcode", "Start Point"]
+
+
+def test_extract_uk_postcode_variants():
+    assert geocoding_client._extract_uk_postcode("Bakewell Showground, Bakewell. DE45 1AH") == "DE45 1AH"
+    assert geocoding_client._extract_uk_postcode("SW1A 1AA") == "SW1A 1AA"
+    assert geocoding_client._extract_uk_postcode("No postcode in this string") is None

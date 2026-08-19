@@ -14,6 +14,7 @@ the one choke point every geocode call goes through, so throttling here
 covers every caller regardless of which event triggered it).
 """
 
+import re
 import time as time_module
 from datetime import datetime
 
@@ -23,6 +24,16 @@ from services.config import settings
 
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _TIMEOUT = 15
+
+# UK postcode, e.g. "DE45 1AH", "SW1A 1AA", "M1 1AE" - deliberately UK-only, matching
+# this project's current UK-only scope (organisers_seed.csv/parkrun_import.py's own
+# DEFAULT_COUNTRY), not a general address-parsing pattern.
+_UK_POSTCODE_RE = re.compile(r"\b([A-Za-z]{1,2}[0-9][A-Za-z0-9]?\s*[0-9][A-Za-z]{2})\b")
+
+
+def _extract_uk_postcode(text: str) -> str | None:
+    match = _UK_POSTCODE_RE.search(text)
+    return match.group(1) if match else None
 
 # Nominatim's usage policy: max 1 request/second, enforced here (not per-caller)
 # since this module is the single choke point every geocode() call passes
@@ -79,12 +90,41 @@ def geocode_event_location(
     location: str | None, start_location: str | None, finish_location: str | None
 ) -> tuple[float, float] | None:
     """
-    Geocodes whichever of an event's three location fields is usable first,
-    in the same priority order export_events.py's own _render_map already
-    uses (location, then start_location, then finish_location) - kept
-    consistent with that existing precedent rather than inventing a new one.
+    Geocodes whichever of an event's three location fields is usable, in the same
+    priority order export_events.py's own _render_map already uses (location, then
+    start_location, then finish_location) - kept consistent with that existing
+    precedent rather than inventing a new one.
+
+    Each non-blank candidate is tried two ways before moving on to the next field:
+    1. As-is.
+    2. If that fails and a UK postcode can be picked out of it, just that postcode.
+
+    Confirmed in practice (a real reported case): "Bakewell Showground, Bakewell.
+    DE45 1AH" fails outright against Nominatim - "Bakewell Showground" isn't indexed
+    as a place at all, and Nominatim's free-text search doesn't retry "ignore the part
+    it can't match" on its own - but "DE45 1AH" alone, extracted from that same
+    string, resolves fine. A plain regex covers this (an unindexed venue name prefixed
+    to an otherwise-good postcode) without taking on a full address-parsing library
+    for it - not a general "make any address resolve" guarantee, just this one
+    confirmed failure mode.
+
+    Falls through to the next field (not just the next candidate check) when a field
+    is non-blank but still can't be resolved either way - previously this returned
+    None as soon as it found the first non-blank field, even if that field's own
+    geocode() call failed, never trying start_location/finish_location at all.
     """
     for candidate in (location, start_location, finish_location):
-        if candidate and candidate.strip():
-            return geocode(candidate)
+        if not candidate or not candidate.strip():
+            continue
+
+        result = geocode(candidate)
+        if result is not None:
+            return result
+
+        postcode = _extract_uk_postcode(candidate)
+        if postcode and postcode.strip().lower() != candidate.strip().lower():
+            result = geocode(postcode)
+            if result is not None:
+                return result
+
     return None
