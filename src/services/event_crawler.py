@@ -401,18 +401,19 @@ def register_event_from_fields(
     """
     Upserts an Event (+ distances/occurrence) directly from an already-fully-resolved
     fields dict - no robots.txt check, no scrape, no LLM call at all, unlike
-    crawl_event above. Used by listing_crawler.py's _parkrun_handler when its own
-    registrator override is active (see Organiser.registrator's own docstring and
-    README.md's "registrator" section): parkrun's events.json feed already supplies
-    everything needed to build a real Event (name, location, exact coordinates, and -
-    via parkrun_feed.build_event_fields - which of the two standing weekly schedules
-    applies), and confirmed in practice, the event page itself tends to come back HTTP
-    403 (parkrun's own anti-bot protection) when actually scraped - so scraping it at
-    all was pure downside for the one source that already has everything ready to use.
+    crawl_event above. Used by the structured-bulk-feed importers in
+    feed_importers.py's registry (e.g. parkrun_import.py's run_import) - a source
+    whose own feed already supplies everything needed to build a real Event (name,
+    location, exact coordinates, and - via that importer's own build_event_fields -
+    which of the standing weekly schedules applies, for a source like parkrun), so
+    there's nothing left for a per-page scrape/LLM call to add. For parkrun
+    specifically, confirmed in practice: the event page itself tends to come back HTTP
+    403 (parkrun's own anti-bot protection) when actually scraped anyway - so scraping
+    it at all would be pure downside even setting the above aside.
 
     No robots.txt check here: unlike crawl_event's own event-page fetch, this never
     makes an outbound request to the event's own URL at all - the only real request
-    (parkrun_feed.get_events's own fetch of events.json) already went through its own
+    (the calling importer's own feed/TSV fetch) already went through its own
     robots.txt-respecting-or-not decision before this function is ever called.
     """
     now = datetime.now(timezone.utc)
@@ -439,7 +440,7 @@ def register_event_from_fields(
         event.last_crawled_at = now
 
         run.status = CrawlStatus.SUCCESS
-        run.detail = "registered directly from parkrun feed data (no scrape)"
+        run.detail = "registered directly from feed data (no scrape)"
         run.finished_at = datetime.now(timezone.utc)
         session.add(run)
         return event

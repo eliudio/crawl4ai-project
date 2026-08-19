@@ -1,14 +1,6 @@
 ﻿# TODOs
 
-## Changes to retrtieving data for parkrun and the impact to the architecture
-
-1. Events can be retrieved from https://github.com/josh-justjosh/parkrun-Cancellations/blob/master/_data/events-table.tsv. That includes parkrun, junior parkrun, etc. Also latitude and longitude
-2. Because this is github and open for bots to grab the data, we can remove the difference in obtaining the data: bot or not, always access this tsv file
-3. There's never the need for the actual webpage to be scraped: the tsv file is sufficient data
-4. We have ruined our architecture to some degree, pushed this parkrun into current architecture, and it doesn't belong there, especially since we're never going to be scraping the actual event url / website. So: let's fix this, i.e. 
-4.1 remove the parkrun entry from the organisers_seed.py
-4.2 remove this parkrun handler, or at least remove that "similarity" and fit to fit the architecture as a handler
-4.3 instead, create a parkrun_local_runner.py and a server side solution for park run. The server side would run on the server and be triggered from time to time, for example per week. This type of fixed-scraping of specific sources should be considered as something serving multiple sources. So somehow we will ping this service with a pubsub message and ask it to "now run parkrun" or "now run meetup" or "now run open stree map" and potentially with some parameters. And this service should have the capability to run in parallel. But this service should be totally distinguished from the "other" process which is a pattern website with events > events
+## Why is it that the export of all events, except parkrun doesn't have an embedded google map?
 
 ## name and slogan
 
@@ -16,8 +8,6 @@ plebys.com - For the plebs, by the plebs, for free, always
 The wiki for race events
 
 or plebbys.com or pleppys.com or plebies.com
-
-## Grab parkrun data from this github source
 
 ## We need, for price comparison, the price as a value, not string + ccy 
 
@@ -166,6 +156,15 @@ to cater for easy registration of parkrun events.
 maybe even have some wizard to register races, one of these wizard is supporting parkrun
 
 ## parkrun cancellations
+   Still open - not implemented by parkrun_import.py. The scraping-a-per-country-page
+   approach described below is moot now (we no longer touch parkrun.com/images.parkrun.com
+   at all - see "Feed import pipeline"), but the underlying feature isn't done: the new
+   source (events-table.tsv, see parkrun_import.py) already carries its own
+   `Cancellations` column per row - every row sampled while building this importer had
+   it empty ("[]"), so its real shape/values are still unconfirmed. Whoever picks this
+   up: map that column into `Event.lifecycle_status`/`lifecycle_text` (see models.py's
+   EventLifecycle) instead of parsing a country-language cancellations page.
+
    Unless  parkrun.com/robots.txt doesn't allow this, which is the case, so skip this for now 
 
    https://images.parkrun.com/events.json
@@ -182,6 +181,12 @@ maybe even have some wizard to register races, one of these wizard is supporting
 ## question
    parkrun question: what happens when we re-run parkrun? We need to somehow verify if the events in the json correspond to the
    entries in the database. Do we do so?
+
+   Partially, as of parkrun_import.py: every row in the current TSV, for the configured
+   country, gets re-registered (upsert, keyed by URL) on every run, so an existing
+   event's fields stay in sync with the feed. Not handled: a parkrun location that
+   disappears from the feed entirely (permanently closed, say) leaves its old `Event`
+   row in the database untouched, with nothing to mark it stale/removed - still open.
 
 ## Introduce a server based database, google probably, cheap / free
    Then also create some quick way to view events from that database, like the extract but then from that database
@@ -262,109 +267,117 @@ prototype code elsewhere in `src/`:
   handles proxy rotation/anti-bot for the rare site that needs it)
   automatically if crawl4ai's own attempt fails. Controlled by
   `SCRAPER_BACKEND` (`crawl4ai` default, or `firecrawl` to always use
-  Firecrawl) — see "Running locally" below for the `local_runner.py` flag.
+  Firecrawl) — see "Running locally" below for the `local_event_scraper.py` flag.
 - `llm_extractor.py` — extracts structured event fields from page markdown;
   provider is pluggable (`grok` or `anthropic`) via `LLM_PROVIDER`.
 - `listing_crawler.py` / `event_crawler.py` — the two pipeline stages.
   `Organiser.source_type` is the enforcement point for never crawling
   aggregator/platform data: only `source_type=organiser` rows are ever fed
   into event crawling.
-- `main.py` — FastAPI app exposing `/tasks/listing-crawl` and
-  `/tasks/event-crawl`, meant to sit behind Pub/Sub push subscriptions on
-  Cloud Run.
+- `main.py` — FastAPI app exposing `/tasks/listing-crawl`, `/tasks/event-crawl`
+  (the pattern-website pipeline above) and `/tasks/feed-import` (the separate
+  structured-bulk-feed pipeline — see "Feed import pipeline" below), meant to
+  sit behind Pub/Sub push subscriptions on Cloud Run.
 - `seed_organisers.py` — loads `data/organisers_seed.csv` (the organiser
   list below, extracted from findarace.com/racecheck.com) into the
-  `organisers` table, since phase 1 has no automated discovery yet.
-- `local_runner.py` — runs the whole pipeline in-process (no Pub/Sub), for
-  local development against a local/dev Postgres.
+  `organisers` table, since phase 1 has no automated discovery yet. Only ever
+  holds organisers for the pattern-website pipeline — a feed-import source's
+  own umbrella organiser (parkrun, ...) is bootstrapped by that importer
+  itself instead, see below.
+- `local_event_scraper.py` — runs the pattern-website pipeline in-process (no
+  Pub/Sub), for local development against a local/dev Postgres.
+- `feed_importers.py` / `parkrun_import.py` / `local_feed_importer.py` — the
+  separate structured-bulk-feed pipeline and its own local-dev runner — see
+  "Feed import pipeline" below.
 - `Dockerfile` / `requirements.txt` — minimal container for Cloud Run,
   deliberately independent of the repo-root `pyproject.toml`.
 
-### Worked example: parkrun listing-crawl dispatch (`registrator` "bot" vs a real person)
+### Feed import pipeline (parkrun, and any future structured-bulk-feed source)
 
-`listing_crawler.crawl_listing()`'s whole job is to answer *"what needs doing?"*
-cheaply and quickly (one request, no LLM) - completely separately from *"do it,"*
-which then gets fanned out as independent Pub/Sub messages (`main.py`'s
-`/tasks/listing-crawl` handler, below), each independently retryable and
-parallelizable across Cloud Run instances. That split exists because stage 2 (scrape a
-page + run an LLM extraction) is the slow, costly, per-page-failure-prone part, and a
-typical organiser can have dozens to hundreds of events - a single inline loop inside
-one HTTP handler invocation can't give that independent retry/parallelism, and would
-risk blowing past any sane request timeout.
+Not every event source is a website to scrape. Parkrun (and Meetup/OpenStreetMap,
+should those get built - see the TODO sections further down) publish everything as one
+structured, ready-to-use feed covering many locations at once - there's no listing page
+to discover and no per-event page worth opening. Forcing that shape through the
+pattern-website pipeline above (`Organiser.handler` + `listing_crawler.py`) is exactly
+what the old "parkrun" handler did, and it needed a real, separately-obtained
+authorisation override just to avoid scraping parkrun's own site at all (see git
+history) - a sign the fit was wrong, not that the override was.
 
-`_parkrun_handler` (`Organiser.handler == "parkrun"`) is the one handler where this
-genuinely differs depending on `Organiser.registrator` - see `Organiser.registrator`'s
-own docstring in `models.py` for what that field means (`"bot"`: an unattended
-automated crawl, always respecting robots.txt; anything else names a real person who
-has separately, directly obtained the site owner's own permission to collect the
-data). Worked through step by step, for organiser 1 (parkrun UK):
+Instead, this is its own small pipeline, deliberately kept apart from
+`discovery_handlers.py`/`listing_crawler.py`:
 
-**`registrator == "bot"`** (the default - an unattended automated crawl):
+- `feed_importers.py` — a registry (the same "name -> callable" shape
+  `discovery_handlers.py` already uses for the other pipeline) mapping a source name
+  (`"parkrun"`, ...) to the importer that owns it end to end: fetch, resolve/create
+  whichever `Organiser` row(s) its events belong to, upsert `Event` rows directly.
+  Also owns `get_or_create_organiser()`, shared by any importer that represents its
+  whole source as one umbrella organiser (parkrun, a future meetup importer) rather
+  than one per real-world event host (an OSM-style source would be different - it
+  discovers many distinct organisers, one per event, and wouldn't use this helper at
+  all). That umbrella row's `source_type` is forced to `PLATFORM` - the same "exists
+  for provenance/FK purposes, excluded from the pattern-website pipeline" contract
+  `main.py`/`local_event_scraper.py` already enforce for aggregator/platform rows, so
+  nothing needs a bespoke check to keep it from ever being picked up by
+  `crawl_listing()` again.
+- `parkrun_import.py` — the "parkrun" importer. Source of truth is
+  [josh-justjosh/parkrun-Cancellations](https://github.com/josh-justjosh/parkrun-Cancellations)'s
+  own `events-table.tsv` (built for parkruncancellations.com, MIT-licensed, refreshed
+  automatically several times a day) - not parkrun's own `events.json` feed. Fetched as
+  a plain, hardcoded `registrator="bot"` (no authorisation-override mechanism, unlike
+  the old handler this replaces): reading an openly, unambiguously licensed third-party
+  republication hosted on GitHub's own infrastructure is a different act from reading
+  parkrun's own site under an unattended crawl, which parkrun's own stated policy
+  (parkrun.com/scraping) asks not to happen - see that module's own docstring for the
+  reasoning in full.
+- `local_feed_importer.py` — runs one importer in-process (no Pub/Sub), the local-dev
+  equivalent of `local_event_scraper.py` for this pipeline: `python -m
+  services.local_feed_importer --source parkrun`.
+- `main.py`'s `/tasks/feed-import` — the production entrypoint, triggered by a Pub/Sub
+  message naming which importer to run (`{"source": "parkrun", "params": {...}}`, see
+  `pubsub_client.publish_feed_import`) rather than a per-organiser/per-event fan-out -
+  meant to sit behind a Cloud Scheduler job (e.g. weekly), not the two per-item queues
+  the pattern-website pipeline uses.
 
-1. A Pub/Sub message triggers `POST /tasks/listing-crawl` with `organiser_id=1`.
-2. `main.py` loads the organiser, calls `listing_crawler.crawl_listing(session, organiser)`.
-3. `crawl_listing()` looks up `organiser.handler` (`"parkrun"`) in
-   `discovery_handlers`, dispatches to `_parkrun_handler`.
-4. Since `registrator == "bot"`, `_parkrun_handler` calls
-   `parkrun_feed.get_event_urls(...)` - this checks robots.txt for real, fetches
-   `events.json`, and constructs each event's URL from `base_url + eventname + "/"`.
-5. `_filter_new_urls` drops any URL already in the `events` table, keeping only
-   genuinely new ones.
-6. That filtered list is returned all the way back up to `main.py`.
-7. `main.py` loops over it: `for url in new_urls: pubsub_client.publish_event_crawl(organiser_id, url)`
-   - **one Pub/Sub message per URL**.
-8. Each of those messages, independently and later (possibly in parallel, possibly on
-   a different Cloud Run instance), triggers its own `POST /tasks/event-crawl`, which
-   calls `event_crawler.crawl_event(session, organiser_id, event_url)` - the real
-   scrape + LLM extraction, per event.
+### Worked example: parkrun feed import (`main.py`'s `/tasks/feed-import`)
 
-**`registrator != "bot"`** (a real person's name, e.g. `"johan"` - the override active):
+Unlike the pattern-website pipeline's per-organiser/per-event fan-out (below), a feed
+importer does everything in one call - there's no separate "discover URLs" stage to
+fan anything out from, because the feed already lists everything at once. Worked
+through step by step:
 
-Steps 1-3 are identical. From there:
+1. A scheduled Pub/Sub message (Cloud Scheduler, e.g. weekly) triggers `POST
+   /tasks/feed-import` with `{"source": "parkrun", "params": {}}`.
+2. `main.py` looks up `"parkrun"` in `feed_importers`' registry, dispatches to
+   `parkrun_import.run_import`.
+3. `run_import` calls `feed_importers.get_or_create_organiser(...)` - finds the
+   existing "parkrun UK" `Organiser` row by name (or creates it, first run), forcing
+   its `source_type` to `PLATFORM` either way so it's excluded from the
+   pattern-website pipeline's own eligibility checks (`main.py`/`local_event_scraper.py`).
+4. `parkrun_import.get_events(...)` fetches and parses
+   `events-table.tsv` - checked against robots.txt for real (`registrator="bot"`,
+   hardcoded, no override mechanism - see that module's own docstring for why a plain
+   bot fetch is the right call for this specific, openly-licensed, third-party-hosted
+   source), then builds a full fields dict per row: name, location, exact coordinates,
+   which of the two standing weekly schedules applies (via the row's own `Status`
+   column).
+5. No dedup step: every row is processed every run, new or already-registered -
+   `event_crawler.register_event_from_fields(...)` is an upsert, not insert-only, so a
+   row already stored just gets replaced in place.
+6. For each `(event_url, fields)` pair, `register_event_from_fields(...)` is called
+   directly - writing the real `Event`/`EventDistance` rows from the TSV data alone. No
+   scrape, no LLM call, no per-page robots.txt check, because there's no per-page fetch
+   at all.
+7. `run_import` returns a small summary dict (`{"status": "ok", "registered": N,
+   "organiser_id": ...}`), logged by `main.py` - there's nothing left to dispatch to a
+   second stage the way the other pipeline's `/tasks/listing-crawl` dispatches to
+   `/tasks/event-crawl`.
 
-4. `_parkrun_handler` calls `parkrun_feed.get_events(...)` instead of
-   `get_event_urls`. robots.txt is skipped entirely this time
-   (`robots.is_allowed()` returns `True` immediately for a non-`"bot"` registrator,
-   never even fetching robots.txt) - and for each feature it builds the *whole* fields
-   dict (`build_event_fields`: name, location, exact coordinates, distance, the
-   standing weekly schedule, everything), not just a bare URL.
-5. No dedup step - `_filter_new_urls` is never called in this branch. Every feature
-   from the feed is processed every time this runs, new or already-existing
-   (`register_event_from_fields` is an upsert, not insert-only).
-6. For each `(event_url, fields)` pair, `event_crawler.register_event_from_fields(...)`
-   is called **immediately, inline** - writing the real `Event`/`EventDistance` rows
-   using only the JSON data. No scrape, no LLM call, no per-page robots.txt check,
-   because there's no per-page fetch at all.
-7. One `CrawlRun` row + one console line get logged directly from inside
-   `_parkrun_handler` itself (e.g. *"parkrun UK: 1417 event(s) registered directly
-   from parkrun feed (registrator='johan')"*) - printed right here specifically
-   because the generic "enqueued N event(s)" line in step 10 is always 0 for this
-   branch and would otherwise read as "nothing happened."
-8. `_parkrun_handler` returns `[]` - not "nothing found," but "nothing left to
-   dispatch," since everything already got done in step 6.
-9. Back in `main.py`, the publish loop (`for url in new_urls: pubsub_client.publish_event_crawl(...)`)
-   runs **zero times** - no `event-crawl` messages get published for any of these
-   events. Steps 7-8 from the `"bot"` case (dispatch, then separately trigger
-   `/tasks/event-crawl`) never happen at all.
-10. `main.py`'s own final print (`enqueued {len(new_urls)} event(s)`) reports
-    "enqueued 0 event(s)" for the same reason `local_runner.py`'s own generic "0 new
-    event URL(s)" line does - it's honestly answering "how many are left to dispatch
-    separately," which is correctly zero; step 7 above is what actually carries the
-    real count.
-
-**`registrator != "bot"` is a deliberate exception to the fan-out design, not a
-shortcut around it**: it's the one handler where there genuinely is no stage 2 to fan
-out, because `events.json` already contains everything needed to build every `Event`
-in one shot. Every other handler (and parkrun's own `"bot"` path) keeps the two-stage
-split because their stage 2 is real, separate, per-page work that needs the
-independent retry/parallelism dispatching it as N messages provides.
-
-**Production has no sanity-check-equivalent lever yet**: `main.py` never passes
-`dry_run`/`event_limit` to `crawl_listing()` at all - only `local_runner.py`'s `--mode
-sanity-check`/`--mode dry-run` compute and pass those (see `local_runner.py`'s own
-`run()`). A real listing-crawl Pub/Sub message against parkrun with the override
-active always processes the *entire* current feed for real, every time it fires,
-until/unless that gets added to `main.py` too.
+Contrast with the pattern-website pipeline (`listing_crawler.py`/`event_crawler.py`),
+where stage 2 (scrape a page + run an LLM extraction) really is slow, costly, and
+per-page-failure-prone, and a typical organiser can have dozens to hundreds of events -
+that's what still needs fanning out as independent, retryable Pub/Sub messages
+(`/tasks/listing-crawl` → N × `/tasks/event-crawl`, see below). A feed importer has no
+such stage 2 at all, so there's nothing to fan out.
 
 ### Running locally
 
@@ -429,23 +442,31 @@ ORDER BY table_name, ordinal_position;
 5. run service
 ```
 cd src
-poetry run python -m services.local_runner --limit 3
+poetry run python -m services.local_event_scraper --limit 3
 ```
 Add `--scraper-backend firecrawl` to force Firecrawl's hosted API instead of
 the self-hosted `crawl4ai` default (e.g. to compare the two, or if
 self-hosting is misbehaving on a given organiser) — see `scraper_client.py`.
 
+6. run a feed importer (parkrun, ...) - the separate pipeline, see "Feed import
+   pipeline" above; not part of the pattern-website `local_event_scraper.py` run above
+```
+poetry run python -m services.local_feed_importer --source parkrun
+```
+
 ### Deploying (GCP)
 
 ```
-gcloud pubsub topics create listing-crawl event-crawl
+gcloud pubsub topics create listing-crawl event-crawl feed-import
 docker build -f src/services/Dockerfile -t <region>-docker.pkg.dev/<project>/crawler/pipeline .
 docker push <region>-docker.pkg.dev/<project>/crawler/pipeline
 gcloud run deploy crawler-pipeline --image <...> --set-env-vars <...>
 gcloud pubsub subscriptions create listing-crawl-push --topic listing-crawl --push-endpoint <run-url>/tasks/listing-crawl
 gcloud pubsub subscriptions create event-crawl-push --topic event-crawl --push-endpoint <run-url>/tasks/event-crawl
+gcloud pubsub subscriptions create feed-import-push --topic feed-import --push-endpoint <run-url>/tasks/feed-import
 poetry run python -m services.seed_organisers --publish   # seed organisers table + kick off first crawl
 gcloud scheduler jobs create pubsub recrawl-organisers --schedule="0 3 * * *" --topic=listing-crawl --message-body='...'  # per-organiser recrawl trigger
+gcloud scheduler jobs create pubsub feed-import-parkrun --schedule="0 4 * * 1" --topic=feed-import --message-body='{"source": "parkrun", "params": {}}'  # weekly
 ```
 
 Cloud SQL (Postgres) is the target for `DATABASE_URL` in production;
@@ -585,4 +606,8 @@ Then:
 
 ## REMARKS
 
-* When using a registrator other than "bot", parkrun handler will ignore robots.txt. It will not be scraping the pages, but it will use the json file with all events and construct the events with that. The events will be registered with the registrator specified. This is "pretend" pleb registration.
+* Superseded: parkrun no longer goes through `Organiser.registrator`/a listing-crawl
+  handler override at all - see "Feed import pipeline" above. `parkrun_import.py`
+  always registers events as `registrator="bot"`, unconditionally, straight from
+  `events-table.tsv` (an openly-licensed third-party republication, not parkrun's own
+  site) - there's no per-run authorisation decision left to make for this source.

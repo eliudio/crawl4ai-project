@@ -12,7 +12,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request
 
-from services import event_crawler, listing_crawler, pubsub_client
+from services import event_crawler, feed_importers, listing_crawler, parkrun_import, pubsub_client  # noqa: F401 - parkrun_import registers "parkrun" on import
 from services.db import session_scope
 from services.models import Organiser, SourceType
 
@@ -68,3 +68,28 @@ async def handle_event_crawl(request: Request):
         event = event_crawler.crawl_event(session, organiser_id, event_url)
 
     return {"status": "ok" if event else "failed"}
+
+
+@app.post("/tasks/feed-import")
+async def handle_feed_import(request: Request):
+    """
+    The structured-bulk-feed pipeline's own entrypoint - see feed_importers.py's
+    module docstring for why this is separate from the two handlers above rather than
+    another Organiser.handler. Pub/Sub payload names which importer to run
+    ({"source": "parkrun", "params": {...}}), not an organiser id/event url - see
+    pubsub_client.publish_feed_import, meant to be triggered on a schedule (Cloud
+    Scheduler) rather than per-organiser/per-event.
+    """
+    payload = _decode_push_message(await request.json())
+    source = payload["source"]
+    params = payload.get("params") or {}
+
+    importer = feed_importers.get_importer(source)
+    if importer is None:
+        return {"status": "skipped", "reason": f"unknown feed import source {source!r}"}
+
+    with session_scope() as session:
+        summary = importer(session, params)
+
+    print(f"{datetime.now():%H:%M:%S} - feed-import {source}: {summary}")
+    return {"status": "ok", "summary": summary}

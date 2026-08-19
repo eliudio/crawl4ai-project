@@ -451,9 +451,10 @@ def test_registrator_refreshed_on_recrawl_not_stuck_at_creation_time_value(monke
     first = event_crawler.crawl_event(session, organiser_id=1, event_url="https://example.org/event/refresh")
     assert first.registrator == "bot"
 
-    # The organiser's own registrator changes between crawls (e.g. the parkrun handler's
-    # own override, see listing_crawler.py's _parkrun_handler) - the next crawl of the
-    # SAME event must pick up the new value, not keep whatever it was first created with.
+    # The organiser's own registrator changes between crawls (e.g. an operator
+    # updating who's responsible - see Organiser.registrator's own docstring) - the
+    # next crawl of the SAME event must pick up the new value, not keep whatever it
+    # was first created with.
     session.execute(text("UPDATE organisers SET registrator = 'jane_doe' WHERE id = 1"))
     session.commit()
 
@@ -467,9 +468,10 @@ def test_registrator_refreshed_on_recrawl_not_stuck_at_creation_time_value(monke
 
 # ---------------------------------------------------------------------------
 # register_event_from_fields - the direct-from-source-data path (no robots check, no
-# scrape, no LLM call at all), used by listing_crawler.py's _parkrun_handler when its
-# own registrator override is active. See parkrun_feed.build_event_fields for what a
-# real fields dict looks like; this one is trimmed to just what matters per assertion.
+# scrape, no LLM call at all), used by the structured-bulk-feed importers in
+# feed_importers.py's registry (e.g. parkrun_import.py's run_import). See
+# parkrun_import.build_event_fields for what a real fields dict looks like; this one
+# is trimmed to just what matters per assertion.
 # ---------------------------------------------------------------------------
 
 _PARKRUN_FIELDS = {
@@ -528,7 +530,7 @@ def test_register_event_from_fields_creates_event_with_no_scrape_or_llm_call(mon
 
     run = session.query(CrawlRun).one()
     assert run.status == event_crawler.CrawlStatus.SUCCESS
-    assert "registered directly from parkrun feed" in run.detail
+    assert "registered directly from feed data" in run.detail
 
 
 def test_register_event_from_fields_does_not_call_geocoding_client(monkeypatch, session):

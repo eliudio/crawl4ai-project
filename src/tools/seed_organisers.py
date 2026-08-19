@@ -80,8 +80,8 @@ def seed_from_csv(csv_path: Path = SEED_CSV) -> list[int]:
                 # Synced on every re-seed (same spirit as sitemap_url above) so editing
                 # this column and re-running seeding is how a registrator actually gets
                 # changed for an already-existing organiser - crawls after this point
-                # (crawl_event/_parkrun_handler etc. all read Organiser.registrator fresh
-                # each time) pick up the new value from here on, matching the crowd-
+                # (crawl_event etc. all read Organiser.registrator fresh each time)
+                # pick up the new value from here on, matching the crowd-
                 # sourced model this is meant to support: someone updates the CSV/record
                 # to reflect who's currently responsible, and that takes effect going
                 # forward - it never rewrites rows already written under the old value.

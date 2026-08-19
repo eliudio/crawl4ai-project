@@ -1,4 +1,10 @@
-"""Publish helper for the two work queues (listing-crawl, event-crawl)."""
+"""
+Publish helper for the pipeline's work queues: listing-crawl/event-crawl (the
+pattern-website pipeline's own per-organiser/per-event fan-out - see
+listing_crawler.py/event_crawler.py) and feed-import (the separate, scheduled
+structured-bulk-feed pipeline - see feed_importers.py), which is dispatched by
+named source rather than fanned out per item.
+"""
 
 import json
 from functools import lru_cache
@@ -26,3 +32,14 @@ def publish_listing_crawl(organiser_id: int) -> None:
 
 def publish_event_crawl(organiser_id: int, event_url: str) -> None:
     publish(settings.event_crawl_topic, {"organiser_id": organiser_id, "event_url": event_url})
+
+
+def publish_feed_import(source: str, params: dict | None = None) -> None:
+    """
+    Ask the feed-import pipeline to run one named importer (e.g. "parkrun") - see
+    feed_importers.py's registry and main.py's own /tasks/feed-import handler, the
+    other end of this. Meant to be triggered on a schedule (Cloud Scheduler -> this
+    topic) rather than per-organiser/per-event like the two functions above; params is
+    forwarded to the importer as-is (e.g. parkrun_import.py's own "country" override).
+    """
+    publish(settings.feed_import_topic, {"source": source, "params": params or {}})

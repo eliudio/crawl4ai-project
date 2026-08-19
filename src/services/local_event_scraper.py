@@ -1,18 +1,22 @@
 """
-Runs the full pipeline in-process, with no Pub/Sub involved — for local
-development against a local/dev Postgres before anything is deployed to
-Cloud Run. Production uses main.py's HTTP handlers, triggered by Pub/Sub.
+Runs the pattern-website pipeline (Organiser homepage -> listing page -> event
+page, see listing_crawler.py/event_crawler.py) in-process, with no Pub/Sub
+involved - for local development against a local/dev Postgres before anything is
+deployed to Cloud Run. Production uses main.py's HTTP handlers, triggered by
+Pub/Sub. Named for the one pipeline it drives, not "the local runner" generically -
+see local_feed_importer.py for the separate structured-bulk-feed pipeline's own
+local-dev equivalent (parkrun, ...), which this module has nothing to do with.
 
 Usage:
-    python -m services.local_runner --limit 3
-    python -m services.local_runner --organiser-id 42
-    python -m services.local_runner --mode dry-run  # discover event URLs but don't crawl/store them, just print
-    python -m services.local_runner --mode sanity-check  # crawl only 1 event per organiser - a quick smoke test across all of them
-    python -m services.local_runner --check-mode url-check  # skip re-crawl of any URL already stored, changed or not
-    python -m services.local_runner --organiser-id 42 --force-refresh  # re-crawl every event for organiser
-                                                                        # 42, replacing existing rows, adding
-                                                                        # missing ones - e.g. after fixing a bug
-                                                                        # in extraction that needs a full redo
+    python -m services.local_event_scraper --limit 3
+    python -m services.local_event_scraper --organiser-id 42
+    python -m services.local_event_scraper --mode dry-run  # discover event URLs but don't crawl/store them, just print
+    python -m services.local_event_scraper --mode sanity-check  # crawl only 1 event per organiser - a quick smoke test across all of them
+    python -m services.local_event_scraper --check-mode url-check  # skip re-crawl of any URL already stored, changed or not
+    python -m services.local_event_scraper --organiser-id 42 --force-refresh  # re-crawl every event for organiser
+                                                                                # 42, replacing existing rows, adding
+                                                                                # missing ones - e.g. after fixing a bug
+                                                                                # in extraction that needs a full redo
 """
 
 import argparse
@@ -23,7 +27,7 @@ from sqlalchemy import select
 from services import event_crawler, listing_crawler
 from services.config import settings
 from services.db import init_db, session_scope
-from services.models import Organiser
+from services.models import Organiser, SourceType
 from tools.seed_organisers import seed_from_csv
 
 
@@ -70,19 +74,26 @@ def run(
     seed_from_csv()
 
     with session_scope() as session:
-        query = select(Organiser).where(Organiser.active.is_(True))
+        # source_type == ORGANISER: matches main.py's own eligibility check for this
+        # same pipeline (see models.py's SourceType docstring) - a PLATFORM row (e.g.
+        # parkrun's own umbrella Organiser, see feed_importers.get_or_create_organiser)
+        # exists only for FK/provenance purposes and must never reach crawl_listing()
+        # here either, same as it never should in production.
+        query = select(Organiser).where(Organiser.active.is_(True), Organiser.source_type == SourceType.ORGANISER)
         if organiser_id is not None:
             query = query.where(Organiser.id == organiser_id)
         if limit is not None:
             query = query.limit(limit)
         organisers = list(session.scalars(query))
 
-    # See listing_crawler.crawl_listing's own docstring for why these two matter at all:
-    # every handler except _parkrun_handler's registrator-override path only ever
-    # discovers a URL list, letting the code below (the dry-run print loop / the
-    # urls_to_crawl = urls[:1] slice) apply the same "preview only"/"just one" effect
-    # generically - but that handler writes real event data inline, before this
-    # function ever gets a list back to slice, so it needs to be told directly instead.
+    # See listing_crawler.crawl_listing's own docstring for why these two matter at
+    # all: every currently-registered handler only ever discovers a URL list, letting
+    # the code below (the dry-run print loop / the urls_to_crawl = urls[:1] slice)
+    # apply the same "preview only"/"just one" effect generically. Kept as part of the
+    # contract anyway - a handler that writes real event data inline, before this
+    # function ever gets a list back to slice, would need to be told directly instead
+    # (the old "parkrun" handler was exactly that shape - see git history/
+    # feed_importers.py, the separate pipeline that replaced it).
     dry_run = mode == "dry-run"
     event_limit = 1 if mode == "sanity-check" else None
 

@@ -2,8 +2,8 @@
 Unit tests for discovery_handlers.py - the generic registry ("factory")
 mapping an Organiser.handler name to whatever callable actually discovers
 that organiser's event URLs. No real handlers here - listing_crawler.py owns
-registering "default"/"parkrun" at its own module level (see that module's
-own tests for those); this file only exercises the registry mechanism itself.
+registering "default" at its own module level (see that module's own tests
+for it); this file only exercises the registry mechanism itself.
 """
 
 from services import discovery_handlers
@@ -34,11 +34,10 @@ def test_registering_the_same_name_twice_overwrites(monkeypatch):
     assert handler(None, None, {}, False) == ["second"]
 
 
-def test_listing_crawler_registers_default_and_parkrun_on_import():
+def test_listing_crawler_registers_default_on_import():
     # Confirms the actual registration listing_crawler.py performs at its own module
     # level really happened - a unit test against the registry mechanism alone
     # wouldn't catch listing_crawler.py forgetting to call register_handler() at all.
     from services import listing_crawler  # noqa: F401 (import triggers registration)
 
     assert discovery_handlers.get_handler("default") is not None
-    assert discovery_handlers.get_handler("parkrun") is not None

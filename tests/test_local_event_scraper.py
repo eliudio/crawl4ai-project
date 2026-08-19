@@ -1,5 +1,5 @@
 """
-Unit tests for local_runner.run()'s --mode handling:
+Unit tests for local_event_scraper.run()'s --mode handling:
 - "normal": crawl every new event URL found for each organiser.
 - "dry-run": print discovered event URLs, never crawl/store them.
 - "sanity-check": crawl only the first new event URL per organiser - a quick
@@ -15,7 +15,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from services import local_runner
+from services import local_event_scraper
 from services.models import Event, Organiser
 
 
@@ -53,19 +53,19 @@ def organisers():
 
 @pytest.fixture(autouse=True)
 def _stub_infra(monkeypatch, organisers):
-    monkeypatch.setattr(local_runner, "init_db", lambda: None)
-    monkeypatch.setattr(local_runner, "seed_from_csv", lambda: None)
+    monkeypatch.setattr(local_event_scraper, "init_db", lambda: None)
+    monkeypatch.setattr(local_event_scraper, "seed_from_csv", lambda: None)
 
     @contextmanager
     def fake_session_scope():
         yield _FakeSession(organisers)
 
-    monkeypatch.setattr(local_runner, "session_scope", fake_session_scope)
+    monkeypatch.setattr(local_event_scraper, "session_scope", fake_session_scope)
 
 
 def _stub_new_urls(monkeypatch, urls_by_organiser: dict[int, list[str]]):
     monkeypatch.setattr(
-        local_runner.listing_crawler, "crawl_listing",
+        local_event_scraper.listing_crawler, "crawl_listing",
         lambda session, organiser, force=False, dry_run=False, event_limit=None: urls_by_organiser.get(organiser.id, []),
     )
 
@@ -87,7 +87,7 @@ def _stub_crawl_event(monkeypatch):
         calls.check_modes.append(check_mode)
         return Event(organiser_id=organiser_id, url=url)
 
-    monkeypatch.setattr(local_runner.event_crawler, "crawl_event", fake_crawl_event)
+    monkeypatch.setattr(local_event_scraper.event_crawler, "crawl_event", fake_crawl_event)
     return calls
 
 
@@ -98,7 +98,7 @@ def test_normal_mode_crawls_every_new_url(monkeypatch):
     })
     calls = _stub_crawl_event(monkeypatch)
 
-    local_runner.run(mode="normal")
+    local_event_scraper.run(mode="normal")
 
     assert calls == [
         (1, "https://acme.example.com/event/a"),
@@ -111,7 +111,7 @@ def test_dry_run_mode_never_crawls_events(monkeypatch, capsys):
     _stub_new_urls(monkeypatch, {1: ["https://acme.example.com/event/a", "https://acme.example.com/event/b"]})
     calls = _stub_crawl_event(monkeypatch)
 
-    local_runner.run(mode="dry-run")
+    local_event_scraper.run(mode="dry-run")
 
     assert calls == []
     out = capsys.readouterr().out
@@ -130,7 +130,7 @@ def test_sanity_check_mode_crawls_only_first_url_per_organiser(monkeypatch):
     })
     calls = _stub_crawl_event(monkeypatch)
 
-    local_runner.run(mode="sanity-check")
+    local_event_scraper.run(mode="sanity-check")
 
     # Exactly one event per organiser, even though Acme had three new URLs.
     assert calls == [
@@ -143,7 +143,7 @@ def test_sanity_check_mode_handles_organiser_with_no_new_urls(monkeypatch):
     _stub_new_urls(monkeypatch, {1: [], 2: ["https://beta.example.com/event/d"]})
     calls = _stub_crawl_event(monkeypatch)
 
-    local_runner.run(mode="sanity-check")
+    local_event_scraper.run(mode="sanity-check")
 
     assert calls == [(2, "https://beta.example.com/event/d")]
 
@@ -153,7 +153,7 @@ def test_default_mode_is_normal(monkeypatch):
     _stub_new_urls(monkeypatch, {1: ["https://acme.example.com/event/a"]})
     calls = _stub_crawl_event(monkeypatch)
 
-    local_runner.run()
+    local_event_scraper.run()
 
     assert calls == [(1, "https://acme.example.com/event/a")]
 
@@ -161,11 +161,12 @@ def test_default_mode_is_normal(monkeypatch):
 # ---------------------------------------------------------------------------
 # mode -> dry_run/event_limit forwarded to crawl_listing itself, not just used to
 # slice/skip whatever it returns - see crawl_listing's own docstring for why: a
-# handler that writes real event data inline (_parkrun_handler's registrator-override
-# path) has no other way to find out about --mode sanity-check/dry-run at all, since
-# by the time it would return something for the code below to slice, it's too late -
-# the reported gap this fixes (a sanity-check run against parkrun with a registrator
-# override registered its entire 1,417-event feed instead of just one).
+# handler that writes real event data inline (there was one - the old "parkrun"
+# handler's registrator-override path, see git history and feed_importers.py, the
+# separate pipeline that replaced it) would have no other way to find out about
+# --mode sanity-check/dry-run at all, since by the time it would return something for
+# the code below to slice, it's too late. No currently-registered handler needs this,
+# but the mechanism stays exercised here in case a future one does.
 # ---------------------------------------------------------------------------
 
 def _stub_crawl_listing_capture(monkeypatch):
@@ -175,7 +176,7 @@ def _stub_crawl_listing_capture(monkeypatch):
         captured[organiser.id] = {"dry_run": dry_run, "event_limit": event_limit}
         return []
 
-    monkeypatch.setattr(local_runner.listing_crawler, "crawl_listing", fake_crawl_listing)
+    monkeypatch.setattr(local_event_scraper.listing_crawler, "crawl_listing", fake_crawl_listing)
     return captured
 
 
@@ -183,7 +184,7 @@ def test_normal_mode_passes_no_dry_run_and_no_event_limit(monkeypatch):
     captured = _stub_crawl_listing_capture(monkeypatch)
     _stub_crawl_event(monkeypatch)
 
-    local_runner.run(mode="normal", organiser_id=1)
+    local_event_scraper.run(mode="normal", organiser_id=1)
 
     assert captured[1] == {"dry_run": False, "event_limit": None}
 
@@ -192,7 +193,7 @@ def test_sanity_check_mode_passes_event_limit_one(monkeypatch):
     captured = _stub_crawl_listing_capture(monkeypatch)
     _stub_crawl_event(monkeypatch)
 
-    local_runner.run(mode="sanity-check", organiser_id=1)
+    local_event_scraper.run(mode="sanity-check", organiser_id=1)
 
     assert captured[1] == {"dry_run": False, "event_limit": 1}
 
@@ -201,7 +202,7 @@ def test_dry_run_mode_passes_dry_run_true(monkeypatch):
     captured = _stub_crawl_listing_capture(monkeypatch)
     _stub_crawl_event(monkeypatch)
 
-    local_runner.run(mode="dry-run", organiser_id=1)
+    local_event_scraper.run(mode="dry-run", organiser_id=1)
 
     assert captured[1] == {"dry_run": True, "event_limit": None}
 
@@ -222,10 +223,10 @@ def test_force_refresh_threads_force_through_to_crawl_listing(monkeypatch):
         captured[organiser.id] = force
         return []
 
-    monkeypatch.setattr(local_runner.listing_crawler, "crawl_listing", fake_crawl_listing)
+    monkeypatch.setattr(local_event_scraper.listing_crawler, "crawl_listing", fake_crawl_listing)
     _stub_crawl_event(monkeypatch)
 
-    local_runner.run(organiser_id=1, force_refresh=True)
+    local_event_scraper.run(organiser_id=1, force_refresh=True)
 
     assert captured == {1: True, 2: True}
 
@@ -237,10 +238,10 @@ def test_normal_run_does_not_force_crawl_listing(monkeypatch):
         captured[organiser.id] = force
         return []
 
-    monkeypatch.setattr(local_runner.listing_crawler, "crawl_listing", fake_crawl_listing)
+    monkeypatch.setattr(local_event_scraper.listing_crawler, "crawl_listing", fake_crawl_listing)
     _stub_crawl_event(monkeypatch)
 
-    local_runner.run(organiser_id=1)
+    local_event_scraper.run(organiser_id=1)
 
     assert captured == {1: False, 2: False}
 
@@ -254,7 +255,7 @@ def test_force_refresh_crawls_every_returned_url_with_force_check_mode(monkeypat
     })
     calls = _stub_crawl_event(monkeypatch)
 
-    local_runner.run(organiser_id=1, force_refresh=True)
+    local_event_scraper.run(organiser_id=1, force_refresh=True)
 
     assert calls == [
         (1, "https://acme.example.com/event/a"),
@@ -271,7 +272,7 @@ def test_force_refresh_overrides_explicit_check_mode(monkeypatch):
     _stub_new_urls(monkeypatch, {1: ["https://acme.example.com/event/a"]})
     calls = _stub_crawl_event(monkeypatch)
 
-    local_runner.run(organiser_id=1, check_mode="url-check", force_refresh=True)
+    local_event_scraper.run(organiser_id=1, check_mode="url-check", force_refresh=True)
 
     assert calls.check_modes == ["force"]
 
@@ -280,7 +281,7 @@ def test_normal_run_uses_hash_check_by_default(monkeypatch):
     _stub_new_urls(monkeypatch, {1: ["https://acme.example.com/event/a"]})
     calls = _stub_crawl_event(monkeypatch)
 
-    local_runner.run(organiser_id=1)
+    local_event_scraper.run(organiser_id=1)
 
     assert calls.check_modes == ["hash-check"]
 
@@ -300,10 +301,10 @@ def test_listing_crawl_failure_for_one_organiser_does_not_crash_the_run(monkeypa
             raise RuntimeError("DNS resolution failed for hostname \"limelightsportsgroup.com\"")
         return ["https://beta.example.com/event/d"]
 
-    monkeypatch.setattr(local_runner.listing_crawler, "crawl_listing", fake_crawl_listing)
+    monkeypatch.setattr(local_event_scraper.listing_crawler, "crawl_listing", fake_crawl_listing)
     calls = _stub_crawl_event(monkeypatch)
 
-    local_runner.run()  # must not raise
+    local_event_scraper.run()  # must not raise
 
     # Acme (organiser 1) never got as far as crawling any event...
     assert calls == [(2, "https://beta.example.com/event/d")]
@@ -322,11 +323,11 @@ def test_listing_crawl_connection_error_still_stops_the_whole_run(monkeypatch):
     def fake_crawl_listing(session, organiser, force=False, dry_run=False, event_limit=None):
         raise requests.exceptions.ConnectionError("no route to host")
 
-    monkeypatch.setattr(local_runner.listing_crawler, "crawl_listing", fake_crawl_listing)
+    monkeypatch.setattr(local_event_scraper.listing_crawler, "crawl_listing", fake_crawl_listing)
     _stub_crawl_event(monkeypatch)
 
     with pytest.raises(requests.exceptions.ConnectionError):
-        local_runner.run()
+        local_event_scraper.run()
 
 
 # ---------------------------------------------------------------------------

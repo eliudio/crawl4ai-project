@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     gcp_project_id: str | None = None
     listing_crawl_topic: str = "listing-crawl"
     event_crawl_topic: str = "event-crawl"
+    # Separate from the two above: the "structured bulk feed" pipeline (parkrun,
+    # future meetup/OSM importers - see feed_importers.py) is a scheduled, named-source
+    # trigger ({"source": "parkrun", "params": {...}}), not a per-organiser/per-event
+    # fan-out - one topic shared by every importer, dispatched by source name.
+    feed_import_topic: str = "feed-import"
 
     # --- Crawl behaviour ---
     respect_robots_txt: bool = True

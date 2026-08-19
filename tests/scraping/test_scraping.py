@@ -320,7 +320,7 @@ def test_crawl_one_listing_url_respects_robots_disallow_and_logs_it(monkeypatch,
 
 
 # ---------------------------------------------------------------------------
-# force=True: local_runner.py's --force-refresh needs every confirmed event
+# force=True: local_event_scraper.py's --force-refresh needs every confirmed event
 # URL back, not just ones missing from the database - see event_crawler.py's
 # check_mode="force", which then re-extracts and replaces each one in place.
 # ---------------------------------------------------------------------------
@@ -411,8 +411,8 @@ def test_crawl_one_listing_url_force_still_respects_in_run_dedup(monkeypatch):
 def test_crawl_listing_dispatches_to_the_registered_handler(monkeypatch):
     organiser = Organiser(homepage_url="https://example.com/")
     organiser.id = 1
-    organiser.handler = "parkrun"
-    organiser.handler_params = {"country_code": 1}
+    organiser.handler = "custom_handler"
+    organiser.handler_params = {"some_param": 1}
     session = _FakeExistingUrlsSession([])
     captured = {}
 
@@ -420,12 +420,12 @@ def test_crawl_listing_dispatches_to_the_registered_handler(monkeypatch):
         captured["args"] = (session_arg, organiser_arg, params, force, dry_run, event_limit)
         return ["https://example.com/handled/"]
 
-    monkeypatch.setattr(listing_crawler.discovery_handlers, "get_handler", lambda name: fake_handler if name == "parkrun" else None)
+    monkeypatch.setattr(listing_crawler.discovery_handlers, "get_handler", lambda name: fake_handler if name == "custom_handler" else None)
 
     urls = listing_crawler.crawl_listing(session, organiser, force=True)
 
     assert urls == ["https://example.com/handled/"]
-    assert captured["args"] == (session, organiser, {"country_code": 1}, True, False, None)
+    assert captured["args"] == (session, organiser, {"some_param": 1}, True, False, None)
 
 
 def test_crawl_listing_passes_empty_dict_when_no_handler_params(monkeypatch):
@@ -528,236 +528,8 @@ def test_default_handler_skips_sitemap_entirely_when_no_param(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _parkrun_handler - registered under "parkrun", see parkrun_feed.py for why
-# events.json is trusted ahead of ever opening a listing page for this source.
-# ---------------------------------------------------------------------------
-
-def test_parkrun_handler_returns_feed_urls(monkeypatch):
-    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
-    organiser.id = 1
-    session = _FakeExistingUrlsSession([])
-
-    monkeypatch.setattr(
-        listing_crawler.parkrun_feed, "get_event_urls",
-        lambda country_code=97, registrator="bot": ["https://www.parkrun.org.uk/bushy/", "https://www.parkrun.org.uk/southwark/"],
-    )
-
-    urls = listing_crawler._parkrun_handler(session, organiser, {})
-
-    assert urls == ["https://www.parkrun.org.uk/bushy/", "https://www.parkrun.org.uk/southwark/"]
-
-
-def test_parkrun_handler_respects_country_code_param(monkeypatch):
-    organiser = Organiser(homepage_url="https://www.parkrun.us/")
-    organiser.id = 1
-    session = _FakeExistingUrlsSession([])
-    captured = {}
-
-    def fake_get_event_urls(country_code=97, registrator="bot"):
-        captured["country_code"] = country_code
-        return []
-
-    monkeypatch.setattr(listing_crawler.parkrun_feed, "get_event_urls", fake_get_event_urls)
-
-    listing_crawler._parkrun_handler(session, organiser, {"country_code": 1})
-
-    assert captured["country_code"] == 1
-
-
-def test_parkrun_handler_returns_empty_list_with_no_fallback_when_feed_unusable(monkeypatch):
-    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
-    organiser.id = 1
-    session = _FakeExistingUrlsSession([])
-
-    monkeypatch.setattr(listing_crawler.parkrun_feed, "get_event_urls", lambda country_code=97, registrator="bot": None)
-    monkeypatch.setattr(
-        listing_crawler, "default_handler",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("parkrun handler must not fall back to default_handler")),
-    )
-
-    urls = listing_crawler._parkrun_handler(session, organiser, {})
-
-    assert urls == []
-
-
-# ---------------------------------------------------------------------------
-# _parkrun_handler's own registrator override (handler_params["registrator"]) - see
-# its own docstring and README.md's "registrator" section. Applied before anything
-# else, including before the value that's forwarded into the robots.txt check.
-# ---------------------------------------------------------------------------
-
-def test_parkrun_handler_no_override_uses_organisers_own_registrator_and_never_registers_directly(monkeypatch):
-    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
-    organiser.id = 1
-    organiser.registrator = "bot"
-    session = _FakeExistingUrlsSession([])
-    captured = {}
-
-    def fake_get_event_urls(country_code=97, registrator="bot"):
-        captured["registrator"] = registrator
-        return []
-
-    monkeypatch.setattr(listing_crawler.parkrun_feed, "get_event_urls", fake_get_event_urls)
-    monkeypatch.setattr(
-        listing_crawler.parkrun_feed, "get_events",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("bot registrator must not register directly from feed data")),
-    )
-    monkeypatch.setattr(
-        listing_crawler.event_crawler, "register_event_from_fields",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("bot registrator must not register directly from feed data")),
-    )
-
-    listing_crawler._parkrun_handler(session, organiser, {})
-
-    assert captured["registrator"] == "bot"
-    assert organiser.registrator == "bot"
-
-
-def test_parkrun_handler_registrator_override_registers_events_directly_from_feed_data(monkeypatch, capsys):
-    # register_event_from_fields itself (the real DB upsert) is mocked out here and
-    # tested directly, with a real session, in test_event_crawler.py - this test is
-    # only about _parkrun_handler's own dispatch: does it call the direct-registration
-    # path (not the normal URL-list one), with the right arguments, for every event the
-    # feed returns, and correctly report nothing left for the caller's own per-event
-    # crawl_event step afterwards.
-    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/", name="parkrun UK")
-    organiser.id = 1
-    organiser.registrator = "bot"
-    session = _FakeExistingUrlsSession([])
-    captured = {"registered": []}
-
-    def fake_get_events(country_code=97, registrator="bot"):
-        # The override must already be resolved on the organiser by the time this
-        # (robots-gated) call happens - not applied afterwards.
-        captured["registrator"] = registrator
-        captured["organiser_registrator_at_call_time"] = organiser.registrator
-        return [
-            ("https://www.parkrun.org.uk/bushy/", {"name": "Bushy parkrun"}),
-            ("https://www.parkrun.org.uk/wimbledon-common/", {"name": "Wimbledon Common parkrun"}),
-        ]
-
-    def fake_register(session_arg, organiser_id, event_url, fields, registrator):
-        captured["registered"].append((organiser_id, event_url, fields, registrator))
-
-    monkeypatch.setattr(listing_crawler.parkrun_feed, "get_events", fake_get_events)
-    monkeypatch.setattr(
-        listing_crawler.parkrun_feed, "get_event_urls",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("registrator override must not use the normal URL-list path")),
-    )
-    monkeypatch.setattr(listing_crawler.event_crawler, "register_event_from_fields", fake_register)
-
-    new_urls = listing_crawler._parkrun_handler(session, organiser, {"registrator": "jane_doe"})
-
-    assert captured["registrator"] == "jane_doe"
-    assert captured["organiser_registrator_at_call_time"] == "jane_doe"
-    # Persisted onto the organiser row itself, not just used locally for this call.
-    assert organiser.registrator == "jane_doe"
-    # Nothing left for the caller's own normal per-event crawl_event step - already
-    # fully registered above.
-    assert new_urls == []
-    assert captured["registered"] == [
-        (1, "https://www.parkrun.org.uk/bushy/", {"name": "Bushy parkrun"}, "jane_doe"),
-        (1, "https://www.parkrun.org.uk/wimbledon-common/", {"name": "Wimbledon Common parkrun"}, "jane_doe"),
-    ]
-    # See the reported case: local_runner.py's own generic "0 new event URL(s)" print
-    # (always 0 for this branch, by design) reads as "nothing happened" unless this
-    # handler also says directly what it actually did.
-    out = capsys.readouterr().out
-    assert "parkrun UK: 2 event(s) registered directly from parkrun feed (registrator='jane_doe')" in out
-
-
-def _stub_two_feed_events(monkeypatch, captured):
-    def fake_get_events(country_code=97, registrator="bot"):
-        return [
-            ("https://www.parkrun.org.uk/bushy/", {"name": "Bushy parkrun"}),
-            ("https://www.parkrun.org.uk/wimbledon-common/", {"name": "Wimbledon Common parkrun"}),
-        ]
-
-    def fake_register(session_arg, organiser_id, event_url, fields, registrator):
-        captured["registered"].append(event_url)
-
-    monkeypatch.setattr(listing_crawler.parkrun_feed, "get_events", fake_get_events)
-    monkeypatch.setattr(listing_crawler.event_crawler, "register_event_from_fields", fake_register)
-
-
-def test_parkrun_handler_registrator_override_event_limit_registers_only_the_first_n(monkeypatch):
-    # The reported gap: a plain --mode sanity-check run against parkrun with a
-    # registrator override active registered the ENTIRE feed, since there was nothing
-    # left in the returned (always-empty, for this branch) list for local_runner.py's
-    # own urls[:1] slice to limit - the slicing has to happen here instead, before any
-    # registration happens at all.
-    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
-    organiser.id = 1
-    organiser.registrator = "jane_doe"
-    session = _FakeExistingUrlsSession([])
-    captured = {"registered": []}
-    _stub_two_feed_events(monkeypatch, captured)
-
-    new_urls = listing_crawler._parkrun_handler(session, organiser, {}, event_limit=1)
-
-    assert captured["registered"] == ["https://www.parkrun.org.uk/bushy/"]
-    assert new_urls == []
-
-
-def test_parkrun_handler_registrator_override_no_event_limit_registers_everything(monkeypatch):
-    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
-    organiser.id = 1
-    organiser.registrator = "jane_doe"
-    session = _FakeExistingUrlsSession([])
-    captured = {"registered": []}
-    _stub_two_feed_events(monkeypatch, captured)
-
-    listing_crawler._parkrun_handler(session, organiser, {}, event_limit=None)
-
-    assert captured["registered"] == [
-        "https://www.parkrun.org.uk/bushy/", "https://www.parkrun.org.uk/wimbledon-common/",
-    ]
-
-
-def test_parkrun_handler_registrator_override_dry_run_registers_nothing(monkeypatch, capsys):
-    # Same "preview only, touch nothing" guarantee every other handler already gives
-    # dry-run for free - this is the one branch that otherwise would write real rows.
-    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/", name="parkrun UK")
-    organiser.id = 1
-    organiser.registrator = "jane_doe"
-    session = _FakeExistingUrlsSession([])
-    captured = {"registered": []}
-    _stub_two_feed_events(monkeypatch, captured)
-    monkeypatch.setattr(
-        listing_crawler.event_crawler, "register_event_from_fields",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("dry_run must not register anything")),
-    )
-
-    new_urls = listing_crawler._parkrun_handler(session, organiser, {}, dry_run=True)
-
-    # local_runner.py's own existing, unmodified dry-run print loop
-    # ("for url in urls: print(...)") needs exactly this - the URLs that WOULD have
-    # been registered, same contract every other handler already satisfies for it.
-    assert new_urls == ["https://www.parkrun.org.uk/bushy/", "https://www.parkrun.org.uk/wimbledon-common/"]
-    out = capsys.readouterr().out
-    assert "parkrun UK: [dry-run] 2 event(s) would be registered directly from parkrun feed (registrator='jane_doe')" in out
-
-
-def test_parkrun_handler_registrator_override_dry_run_with_event_limit(monkeypatch):
-    organiser = Organiser(homepage_url="https://www.parkrun.org.uk/")
-    organiser.id = 1
-    organiser.registrator = "jane_doe"
-    session = _FakeExistingUrlsSession([])
-    captured = {"registered": []}
-    _stub_two_feed_events(monkeypatch, captured)
-    monkeypatch.setattr(
-        listing_crawler.event_crawler, "register_event_from_fields",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("dry_run must not register anything")),
-    )
-
-    new_urls = listing_crawler._parkrun_handler(session, organiser, {}, dry_run=True, event_limit=1)
-
-    assert new_urls == ["https://www.parkrun.org.uk/bushy/"]
-
-
-# ---------------------------------------------------------------------------
-# _filter_new_urls - shared by any handler that gets back a whole feed's
-# worth of URLs in one go (sitemap, parkrun).
+# _filter_new_urls - shared by any handler that gets back a whole sitemap's
+# worth of URLs in one go.
 # ---------------------------------------------------------------------------
 
 def test_filter_new_urls_excludes_existing_by_default():
