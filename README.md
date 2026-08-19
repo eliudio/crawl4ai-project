@@ -7,6 +7,34 @@ The wiki for race events
 
 or plebbys.com or pleppys.com or plebies.com
 
+## Refactor
+
+I want your feedback, before you do something
+
+We have some local processes.
+
+We have some server processes.
+
+We have some processes that cater for common stuff
+
+We have some processes that cover functionality for handling parkrun stuff
+
+We have some specific scraping events
+
+We probably have some common helper functions
+
+We have some export events code
+
+We have some seeding organisers stuff
+
+And it basically sits in 1 directory, well 2, but it's not well organised
+
+I want to restructure, put everything in a nice structure
+
+And I want the unit tests to have a corresponding directory structure
+
+What do you think, what structure do you propose?
+
 ## We need, for price comparison, the price as a value, not string + ccy 
 
 ## APP: Map with search results + the price, like booking.com.
@@ -192,16 +220,8 @@ maybe even have some wizard to register races, one of these wizard is supporting
 
 ## Move the project to rompje.com
 
-## code cleanup
-
-Ask AI to cleanup
-1) introduce code coverage tool / write unit tests to cover 100% of code
-2) restructure the code, new directory structure
-- introduce a subdirectory for common, local and server
-- put specific python scripts in these directories, specific to these purposes, common, local and serve
-- create directories tools/export with export scripts
-- create directories models and move the models in there
-- mimick the same directory structure for unit tests
+## Unit test coverage
+introduce code coverage tool / write unit tests to cover 100% of code
 
 ## run on google
 
