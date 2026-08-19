@@ -1,5 +1,15 @@
 ﻿# TODOs
 
+## Changes to retrtieving data for parkrun and the impact to the architecture
+
+1. Events can be retrieved from https://github.com/josh-justjosh/parkrun-Cancellations/blob/master/_data/events-table.tsv. That includes parkrun, junior parkrun, etc. Also latitude and longitude
+2. Because this is github and open for bots to grab the data, we can remove the difference in obtaining the data: bot or not, always access this tsv file
+3. There's never the need for the actual webpage to be scraped: the tsv file is sufficient data
+4. We have ruined our architecture to some degree, pushed this parkrun into current architecture, and it doesn't belong there, especially since we're never going to be scraping the actual event url / website. So: let's fix this, i.e. 
+4.1 remove the parkrun entry from the organisers_seed.py
+4.2 remove this parkrun handler, or at least remove that "similarity" and fit to fit the architecture as a handler
+4.3 instead, create a parkrun_local_runner.py and a server side solution for park run. The server side would run on the server and be triggered from time to time, for example per week. This type of fixed-scraping of specific sources should be considered as something serving multiple sources. So somehow we will ping this service with a pubsub message and ask it to "now run parkrun" or "now run meetup" or "now run open stree map" and potentially with some parameters. And this service should have the capability to run in parallel. But this service should be totally distinguished from the "other" process which is a pattern website with events > events
+
 ## name and slogan
 
 plebys.com - For the plebs, by the plebs, for free, always 
@@ -7,8 +17,25 @@ The wiki for race events
 
 or plebbys.com or pleppys.com or plebies.com
 
+## Grab parkrun data from this github source
+
+## We need, for price comparison, the price as a value, not string + ccy 
+
+## APP: Map with search results + the price, like booking.com.
+
+## When a bot creates an event, or an organisation, ... it needs to be
+   able to add a comment / note / source like "retrieved from url", for example
+   retrieved from github
+
+## meetup
+
+Can we retrieve events from meetup?
+
+https://grok.com/share/c2hhcmQtMw_04a30cea-98f0-434a-bfa2-2e7ca294cf3
+
 ## OpenStreetMap
-AI: Try using OpenStreetMap data + community layer as source of event data
+
+AI: I want to consider using OpenStreetMap data + community layer as source of event data
 Using the Overpass API with targeted queries is the intended and accepted way to pull specific features such as 
 network=parkrun or operator=Parkrun.
 
@@ -125,6 +152,13 @@ ALTER TABLE contributions
 * The original malicious contributions stay in the table forever; they are simply no longer the current version of the entity.
 
 This is exactly the pattern used by MediaWiki (revision history + rollback) and OpenStreetMap (versioned objects + changeset reverts): the live data is restored, the full provenance remains, and a single user’s damage can be undone cleanly while preserving everyone else’s work.
+
+## Commuity
+User reputation / levels: New or low-contribution accounts have less weight. Higher-level users’ reports carry more influence.
+Community verification: Other drivers confirm (“thumbs up” / still there) or deny (“not there”). Multiple independent confirmations strengthen a report; repeated denials weaken it.
+Technical measures: De-duplication (same-location/time reports from one source don’t stack easily), location/time stamping, and detection of suspicious patterns (e.g., rapid repeated reports from one account). Ghosting or shadow-banning can hide a user’s reports from others without fully banning the account.
+Policy enforcement: Fake/spam reports violate community terms. Persistent abuse can lead to temporary or permanent restrictions. Community editors and Waze staff can investigate repeated problems from the same username.
+No single-user instant override: One person marking “not there” (including an officer trying to clear their own presence) usually only affects their own view or slightly shortens the report’s life; several independent “not there” votes are typically needed to clear it for everyone.
 
 ## APP: event creation
 We will want to be able to easily create, through the interface of the app weekly events
