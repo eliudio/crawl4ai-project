@@ -141,7 +141,7 @@ ALTER TABLE contributions
 
 This is exactly the pattern used by MediaWiki (revision history + rollback) and OpenStreetMap (versioned objects + changeset reverts): the live data is restored, the full provenance remains, and a single user’s damage can be undone cleanly while preserving everyone else’s work.
 
-## Commuity
+## Community
 User reputation / levels: New or low-contribution accounts have less weight. Higher-level users’ reports carry more influence.
 Community verification: Other drivers confirm (“thumbs up” / still there) or deny (“not there”). Multiple independent confirmations strengthen a report; repeated denials weaken it.
 Technical measures: De-duplication (same-location/time reports from one source don’t stack easily), location/time stamping, and detection of suspicious patterns (e.g., rapid repeated reports from one account). Ghosting or shadow-banning can hide a user’s reports from others without fully banning the account.
@@ -188,9 +188,7 @@ maybe even have some wizard to register races, one of these wizard is supporting
 
 ## Introduce a server based database, google probably, cheap / free
    Then also create some quick way to view events from that database, like the extract but then from that database
-   not generated static but dynamic 
-
-## Move the project to rompje.com
+   not generated static but dynamic
 
 ## Unit test coverage
 introduce code coverage tool / write unit tests to cover 100% of code
