@@ -19,4 +19,4 @@ COPY src/services ./src/services
 ENV PYTHONPATH=/app/src
 ENV PORT=8080
 
-CMD exec uvicorn services.main:app --host 0.0.0.0 --port ${PORT}
+CMD exec uvicorn services.server.main:app --host 0.0.0.0 --port ${PORT}
