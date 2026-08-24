@@ -1,42 +1,131 @@
-﻿# TODOs
+﻿# App description
 
-## name and slogan
+## Overview
+We want to become something like to booking.com for sports events. 
+Although, we don't have to own the hosting of the events. The main purpose of the app
+is to fill a gap in the market: when I want to run, I currently have to go and search 
+many websites and apps, to find a local run. And I'll be lucky to find one. But,
+there are plenty of races being organised, there isn't 1 database globally around the
+world which covers all of them. The existing ones have a business model that doesn't focus
+on this. Their business model is about hosting events and making money from participating.
+That's not what this app is about. This app is to cater for the needs of the runner, of the
+crowd. 
 
-plebys.com - For the plebs, by the plebs, for free, always 
+We want to create a database with sports event details. Sports events such as running (initially), 
+cycling, and other sports events. The database should contain event details such as location, price, description, and 
+more specific details like distance, age, ...
+
+## Crowd sourcing
+
+The event data should be crowd sourced, i.e. like wikipedia, or openstreetmap, or wayze, 
+we allow users to register data.
+
+## Bot sourcing
+
+But we want to bootstrap this a bit with bots also, which crawl the internet and find events. 
+More of this below.
+
+There are online database available. There are 2 distinct groups of providers:
+1) the event organiser: these are companies and organisations who organise sports events. 
+Example: https://www.runthrough.co.uk/, https://www.onerace.events/events
+2) the event aggregators: these are companies that actually collect events from the internet and make them available 
+online in 1 big database. Example: https://findarace.com/
+3) the event platforms: these are companies that allow event organisers to host their event on their platform
+
+We are interested in gathering events from events organisers. The purpose of this database is to be used for our
+own aggregator project. We do not want to steal events from the event aggregator databases themselves. However,
+we might want to use event aggregators to find out which event organisers exists. But we will never actually use
+the details provided from the aggregators. The same with event platforms. The latter is harder to detect, but we
+should try to exclude.
+
+### Aggregator -> Organiser
+One way of gathering organizers of events is by first finding the organisers from 
+aggregator sites. We do not want to expose these aggregators to the outside world 
+of source. But we can internally store and maintain all organisers, and from there
+we can scrape the events.
+
+So for example
+* We'd go to the event aggregator and find events. For example:  https://findarace.com/10k-runs
+* from there we find races, For example: https://findarace.com/events/the-one-in-the-park-hyde-park
+* from there we find the organiser page. For example: https://findarace.com/onerace
+* from there we find the organiser home page. For example https://www.onerace.events/
+-> Voila this is the organiser
+
+With the organiser, we can now freely scrape the events. For example https://www.onerace.events/events
+
+### Initial phase of the project
+In an initial phase of the project, we will manually retrieved list of event organiser event URLs (home pages).
+
+## Example functionalities
+- Map with search results + the price, like booking.com.
+- keep history of changes to event data (or all data for that matter)
+- allow to mass undo a change, if a hacker / maliscious member has been identified
+- Community: User reputation / levels: New or low-contribution accounts have less weight. Higher-level users’ reports carry more influence.
+Community verification: Other drivers confirm (“thumbs up” / still there) or deny (“not there”). Multiple independent confirmations strengthen a report; repeated denials weaken it.
+Technical measures: De-duplication (same-location/time reports from one source don’t stack easily), location/time stamping, and detection of suspicious patterns (e.g., rapid repeated reports from one account). Ghosting or shadow-banning can hide a user’s reports from others without fully banning the account.
+Policy enforcement: Fake/spam reports violate community terms. Persistent abuse can lead to temporary or permanent restrictions. Community editors and Waze staff can investigate repeated problems from the same username.
+No single-user instant override: One person marking “not there” (including an officer trying to clear their own presence) usually only affects their own view or slightly shortens the report’s life; several independent “not there” votes are typically needed to clear it for everyone.
+- event creation: We will want to be able to easily create, through the interface of the app weekly events
+to cater for easy registration of parkrun events.
+maybe even have some wizard to register races, one of these wizard is supporting parkrun
+- A booking system, like Booking.com for races.
+   * (small, local) organizers can create a race
+   * no commission
+   * members can book to join
+   * some races are only references
+- Stripe pay direct to the customer
+
+
+# Solution
+
+So on the one hand we want an app and a website allowing users to find events (find near me, next weekend, ...)
+Possibly flutter app for APP and website for user interaction
+On the other hand we want a crawl solution, probably a cloud solution.
+The crawling solution must be a scalable solution
+We want a 24x7 online solution scraping events continuously, i.e. on cloud.
+
+# name and slogan
+
+* plebys.com - For the plebs, by the plebs, for free, always 
 The wiki for race events
 
 or plebbys.com or pleppys.com or plebies.com
 
+runafish.com
+
+# todo's
+
+## parkrun cancellations
+Still open - not implemented by parkrun_import.py. The scraping-a-per-country-page
+approach described below is moot now (we no longer touch parkrun.com/images.parkrun.com
+at all - see "Feed import pipeline"), but the underlying feature isn't done: the new
+source (events-table.tsv, see parkrun_import.py) already carries its own
+`Cancellations` column per row - every row sampled while building this importer had
+it empty ("[]"), so its real shape/values are still unconfirmed. Whoever picks this
+up: map that column into `Event.lifecycle_status`/`lifecycle_text` (see models.py's
+EventLifecycle) instead of parsing a country-language cancellations page.
+
+Unless  parkrun.com/robots.txt doesn't allow this, which is the case, so skip this for now 
+
+https://images.parkrun.com/events.json
+has an entry "countries". This has a list of all url's for each country, e.g. https://www.parkrun.org.uk
+If you append cancellations to these url's you get for each country the cancelled events
+This is in the language of the country, the format of this page is 
+- Date in that language, e.g.  lørdag den 22. august 2026
+and then a list of locations, e.g. https://www.parkrun.dk/holbaekfaelled/ and https://www.parkrun.dk/lyngby/
+
+Support this, i.e. when processing parkrun, make sure to flag the cancelled events in the database as 
+cancelled and uncancel the ones that perhaps were cancelled before.
+Unless  parkrun.com/robots.txt doesn't allow this, which is the case, so skip this for now 
+
 ## We need, for price comparison, the price as a value, not string + ccy 
 
-## APP: Map with search results + the price, like booking.com.
-
 ## When a bot creates an event, or an organisation, ... it needs to be
-   able to add a comment / note / source like "retrieved from url", for example
-   retrieved from github
+able to add a comment / note / source like "retrieved from url", for example
+retrieved from github
 
-## meetup
-
-Can we retrieve events from meetup?
-
-https://grok.com/share/c2hhcmQtMw_04a30cea-98f0-434a-bfa2-2e7ca294cf3
-
-## OpenStreetMap
-
-AI: I want to consider using OpenStreetMap data + community layer as source of event data
-Using the Overpass API with targeted queries is the intended and accepted way to pull specific features such as 
-network=parkrun or operator=Parkrun.
-
-What would the result be if I do so today, now?
-
-Don't change anything, just answer to see if OSM has properly populated some events and if this is a source 
-for querying. Just brainstorming.
-
-## bug
-AI: It seems some events have no location, yet the location is given. For example, the location for
-https://www.zigzagrunning.co.uk/event-details/two-hundred-miles-challenge is determined to be www.evententry.com
-That makes no sense. Perhaps this is the best we can do, if we don't want to spend too much. But perhaps this is 
-an easy fix, basically we want events where no location exists to be : unknown location
+## Unit test coverage
+introduce code coverage tool / write unit tests to cover 100% of code
 
 ## add history
 
@@ -141,70 +230,38 @@ ALTER TABLE contributions
 
 This is exactly the pattern used by MediaWiki (revision history + rollback) and OpenStreetMap (versioned objects + changeset reverts): the live data is restored, the full provenance remains, and a single user’s damage can be undone cleanly while preserving everyone else’s work.
 
-## Community
-User reputation / levels: New or low-contribution accounts have less weight. Higher-level users’ reports carry more influence.
-Community verification: Other drivers confirm (“thumbs up” / still there) or deny (“not there”). Multiple independent confirmations strengthen a report; repeated denials weaken it.
-Technical measures: De-duplication (same-location/time reports from one source don’t stack easily), location/time stamping, and detection of suspicious patterns (e.g., rapid repeated reports from one account). Ghosting or shadow-banning can hide a user’s reports from others without fully banning the account.
-Policy enforcement: Fake/spam reports violate community terms. Persistent abuse can lead to temporary or permanent restrictions. Community editors and Waze staff can investigate repeated problems from the same username.
-No single-user instant override: One person marking “not there” (including an officer trying to clear their own presence) usually only affects their own view or slightly shortens the report’s life; several independent “not there” votes are typically needed to clear it for everyone.
+# Data sources
 
-## APP: event creation
-We will want to be able to easily create, through the interface of the app weekly events
-to cater for easy registration of parkrun events.
-maybe even have some wizard to register races, one of these wizard is supporting parkrun
+## meetup
 
-## parkrun cancellations
-   Still open - not implemented by parkrun_import.py. The scraping-a-per-country-page
-   approach described below is moot now (we no longer touch parkrun.com/images.parkrun.com
-   at all - see "Feed import pipeline"), but the underlying feature isn't done: the new
-   source (events-table.tsv, see parkrun_import.py) already carries its own
-   `Cancellations` column per row - every row sampled while building this importer had
-   it empty ("[]"), so its real shape/values are still unconfirmed. Whoever picks this
-   up: map that column into `Event.lifecycle_status`/`lifecycle_text` (see models.py's
-   EventLifecycle) instead of parsing a country-language cancellations page.
+Can we retrieve events from meetup?
 
-   Unless  parkrun.com/robots.txt doesn't allow this, which is the case, so skip this for now 
+https://grok.com/share/c2hhcmQtMw_04a30cea-98f0-434a-bfa2-2e7ca294cf3
 
-   https://images.parkrun.com/events.json
-   has an entry "countries". This has a list of all url's for each country, e.g. https://www.parkrun.org.uk
-   If you append cancellations to these url's you get for each country the cancelled events
-   This is in the language of the country, the format of this page is 
-   - Date in that language, e.g.  lørdag den 22. august 2026
-     and then a list of locations, e.g. https://www.parkrun.dk/holbaekfaelled/ and https://www.parkrun.dk/lyngby/
+## OpenStreetMap
 
-   Support this, i.e. when processing parkrun, make sure to flag the cancelled events in the database as 
-   cancelled and uncancel the ones that perhaps were cancelled before.
-   Unless  parkrun.com/robots.txt doesn't allow this, which is the case, so skip this for now 
+AI: I want to consider using OpenStreetMap data + community layer as source of event data
+Using the Overpass API with targeted queries is the intended and accepted way to pull specific features such as 
+network=parkrun or operator=Parkrun.
 
-## question
-   parkrun question: what happens when we re-run parkrun? We need to somehow verify if the events in the json correspond to the
-   entries in the database. Do we do so?
+What would the result be if I do so today, now?
 
-   Partially, as of parkrun_import.py: every row in the current TSV, for the configured
-   country, gets re-registered (upsert, keyed by URL) on every run, so an existing
-   event's fields stay in sync with the feed. Not handled: a parkrun location that
-   disappears from the feed entirely (permanently closed, say) leaves its old `Event`
-   row in the database untouched, with nothing to mark it stale/removed - still open.
+Don't change anything, just answer to see if OSM has properly populated some events and if this is a source 
+for querying. Just brainstorming.
+
+
+# bugs
+
+## bug Event location
+AI: It seems some events have no location, yet the location is given. For example, the location for
+https://www.zigzagrunning.co.uk/event-details/two-hundred-miles-challenge is determined to be www.evententry.com
+That makes no sense. Perhaps this is the best we can do, if we don't want to spend too much. But perhaps this is 
+an easy fix, basically we want events where no location exists to be : unknown location
 
 ## Introduce a server based database, google probably, cheap / free
-   Then also create some quick way to view events from that database, like the extract but then from that database
-   not generated static but dynamic
+Then also create some quick way to view events from that database, like the extract but then from that database
+not generated static but dynamic
 
-## Unit test coverage
-introduce code coverage tool / write unit tests to cover 100% of code
-
-## run on google
-
-Is the current project work-able to deploy on google?
-I have started this as a google project and local_runner
-Then I have iterated over it, running local_runner
-Now that local_runner works, I want to verify how it can be run on google
-Did we make change on local_runner that need to be applied for google.
-
-# llm consoles
-
-https://console.x.ai
-https://console.anthropic.com
 
 # Server hosted
 
@@ -362,227 +419,3 @@ per-page-failure-prone, and a typical organiser can have dozens to hundreds of e
 that's what still needs fanning out as independent, retryable Pub/Sub messages
 (`/tasks/listing-crawl` → N × `/tasks/event-crawl`, see below). A feed importer has no
 such stage 2 at all, so there's nothing to fan out.
-
-### Running locally
-
-#### setup locally
-
-1. Download, install and run docker desktop
-2. Install Firecrawl: (self hosting not used). 
-```
-C:\src
-mkdir firecrawl2 
-cd C:\src\firecrawl2
-git clone https://github.com/mendableai/firecrawl.git
-cd firecrawl
-npm install
-```
-
-3. Install postgres
-```
-docker run -d --name events-db -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=events -p 5432:5432 postgres:16
-```
-
-4. Install .env
-```
-cp src/services/.env.example src/services/.env
-```
-Provide values for
-* DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/events
-* GROK_API_KEY=your grok api key
-
-#### run locally
-
-1. Start docker desktop on your laptop
-2. Run firecrawl (self hosting not used). 
-```
-cd C:\src\firecrawl2\firecrawl
-docker-compose up
-```
-
-3. Run postgres
-```
-docker start events-db && docker ps --filter "name=events-db" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"```
-```
-
-4. Some useful interactions with database
-
-4.1 Drop all data from postgres
-```
-docker exec -it events-db psql -U postgres -c "DROP DATABASE events;"
-docker exec -it events-db psql -U postgres -d postgres -c "CREATE DATABASE events;"
-```
-
-4.2 Describe all table
-```
-docker exec -it events-db psql -U postgres -d events -c "
-SELECT table_name, column_name, data_type, is_nullable
-FROM information_schema.columns
-WHERE table_schema = 'public'
-ORDER BY table_name, ordinal_position;
-"
-```
-
-5. run service
-```
-cd src
-poetry run python -m services.local_event_scraper --limit 3
-```
-Add `--scraper-backend firecrawl` to force Firecrawl's hosted API instead of
-the self-hosted `crawl4ai` default (e.g. to compare the two, or if
-self-hosting is misbehaving on a given organiser) — see `scraper_client.py`.
-
-6. run a feed importer (parkrun, ...) - the separate pipeline, see "Feed import
-   pipeline" above; not part of the pattern-website `local_event_scraper.py` run above
-```
-poetry run python -m services.local_feed_importer --source parkrun
-```
-
-### Deploying (GCP)
-
-```
-gcloud pubsub topics create listing-crawl event-crawl feed-import
-docker build -f src/services/Dockerfile -t <region>-docker.pkg.dev/<project>/crawler/pipeline .
-docker push <region>-docker.pkg.dev/<project>/crawler/pipeline
-gcloud run deploy crawler-pipeline --image <...> --set-env-vars <...>
-gcloud pubsub subscriptions create listing-crawl-push --topic listing-crawl --push-endpoint <run-url>/tasks/listing-crawl
-gcloud pubsub subscriptions create event-crawl-push --topic event-crawl --push-endpoint <run-url>/tasks/event-crawl
-gcloud pubsub subscriptions create feed-import-push --topic feed-import --push-endpoint <run-url>/tasks/feed-import
-poetry run python -m services.seed_organisers --publish   # seed organisers table + kick off first crawl
-gcloud scheduler jobs create pubsub recrawl-organisers --schedule="0 3 * * *" --topic=listing-crawl --message-body='...'  # per-organiser recrawl trigger
-gcloud scheduler jobs create pubsub feed-import-parkrun --schedule="0 4 * * 1" --topic=feed-import --message-body='{"source": "parkrun", "params": {}}'  # weekly
-```
-
-Cloud SQL (Postgres) is the target for `DATABASE_URL` in production;
-`init_db()` creates tables directly for now — move to Alembic migrations
-once the schema stabilizes.
-
-## Current State
-
-We want to create a database with sports event details. Sports events such as running (initially), 
-cycling, and other sports events. The database should contain event details such as location, price, description, and 
-more specific details like distance, age, ...
-
-There are online database available. There are 2 distinct groups of providers:
-2) the event organiser: these are companies and organisations who organise sports events. 
-Example: https://www.runthrough.co.uk/, https://www.onerace.events/events
-2) the event aggregators: these are companies that actually collect events from the internet and make them available 
-online in 1 big database. Example: https://findarace.com/
-3) the event platforms: these are companies that allow event organisers to host their event on their platform
-
-We are interested in gathering events from events organisers. The purpose of this database is to be used for our
-own aggregator project. We do not want to steal events from the event aggregator databases themselves. However,
-we might want to use event aggregators to find out which event organisers exists. But we will never actually use
-the details provided from the aggregators. The same with event platforms. The latter is harder to detect, but we
-should try to exclude.
-
-I have this prototype project "crwarl4ai project" today. This illustrates this intend.
-
-The prototype currently uses 
-- python as language
-- firecrawl to crawl, browse, interact with the internet / interpret contents of pages 
-- grok AI to interpret contents of pages
-- express VPN to remain anonymous and not look like a robot
-- sqlite3 to store results 
-
-The prototype currently runs on a laptop inside pycharm.
-
-The prototype currently is fed a list of URLS. Each URL represents a home page with a list of events.
-These events are links to event details pages.
-
-Improvements: 
-1) We actually want the prototype to be extended: the list of URLs itself should not be provided but 
-found from events aggregators. The way this would go is 
-1.1) we'd go to the event aggregator and find events. For example:  https://findarace.com/10k-runs
-1.2) from there we find races, For example: https://findarace.com/events/the-one-in-the-park-hyde-park
-1.3) from there we find the organiser page. For example: https://findarace.com/onerace
-1.4) from there we find the organiser home page. For example https://www.onerace.events/
-1.5) from there we find the events. For example https://www.onerace.events/events
-
-This improvement is possibly something we will do in phase 2 of the project, as this searching and finding 
-URLs is potentially different per event aggregator, and hence more bespoke solution.
-
-So initially we will probably stick with a list of manually retrieved list of event organiser event URLs.
-
-I want to implement this differently so that it becomes scalable, more performant and not reliant on a laptop to run.
-I don't mind which technology, language or architecture. It must run on a host, e.g. Google Firebase.
-Let's start with brainstorming around what architecture is best suited for this.
-
-Do NOT consider anything of the existing code. The new solution will be built from scratch, the optimal architecture 
-which is not based on the existing code. Just the ideal architecture, tech and language. 
-
-Which platform(s) will be best? What will run where?
-
-# Actions 
-- buy claude.com antropic or use grok (to be decided) 
-- drop claude.ai subscription
-- Add type of race, length of race, add frequency: yearly, monthly, weekly, daily, single event
-
-
-# Requirements
-
-Initially:
-1. Scrape events from as many organisers as possible. Server side. 24x7 scraping. Don't copy aggregators, only organisers. Respect robots.txt
-2. Scrape aggregators to find organisers. But ONLY use it as a source of organiser names or domain names of organisers
-Race db. Find a race
-3. Indicate races you've done, with time, ... Upload photos, ... Link to Strava / Garmin
-4Community of people
-5Map overview, with races, flags where you've ran, where other's ran, ...
-
-Then:
-1. A booking system, like Booking.com for races.
-   * (small, local) organizers can create a race
-   * no commission
-   * members can book to join
-   * some races are only references
-2. Stripe pay direct to the customer
-
-# To consider event sources:
-* runningcalendar.co.uk
-* englandathletics.org/runevents/
-* runabc.co.uk
-* running.org 
-* etchrock.com
-* racedirectorshq.com/gb/directory/
-* Trail Running Association - https://www.tra-uk.org/
-* Centurion Running - https://www.centurionrunning.com/
-* Ultra X - https://ultra-x.co/
-* British Triathlon - https://www.britishtriathlon.org/
-* Challenge Family - https://www.challenge-family.com/
-* IRONMAN - https://www.ironman.com/
-* Spartan Race (UK) - https://uk.spartan.com/en/
-* Tough Mudder (UK) - https://uk.toughmudder.com/
-* The Wolf Run - https://www.thewolfrun.com/
-* Gravel and Grit Events
-* Howling Events Ltd.
-* MG SPORT
-* MOAR Events Ltd
-* Nice Work Partner Races on behalf of the Romney Marsh Rotary Club,https://www.nice-work.org.uk/ (rotary club: https://romneymarshrotary.co.uk/)
-* One More Lap
-* UK TRAINING CLUB
-* VRM TEAM ASD
-* Challenging Events
-* KS-Client Events
-* Phoenix Running Bedfordshire,https://www.phoenixrunning.co.uk/
-* Rory Macpherson
-* Run Rugged Events
-* Ultra Violet Ltd
-* Well Run
-* Epic Endurance Events CIC,https://www.epicenduranceevents.co.uk/
-* Phoenix Running West Sussex,https://www.phoenixrunning.co.uk/
-* Phoenix Running Hampshire,https://www.phoenixrunning.co.uk/
-* EnduroTrek,https://www.endurotrek.co.uk
-* endurotrek,https://www.endurotrek.co.uk
-* Every Mile Counts
-* endurosport LLP
-* Phoenix Running Cambridgeshire,https://www.phoenixrunning.co.uk/
-* Nice Work Partner Races,https://www.nice-work.org.uk/
-* Phoenix Running Manchester,https://www.phoenixrunning.co.uk/
-* UK Cycling Events
-* OP Events
-* Big Bear Events
-* Phoenix Running South Wales,https://www.phoenixrunning.co.uk/
-* The Clubhouse
-* Nice Work,https://www.nice-work.org.uk/
-* Rocket Race
-* Curley's Leisure / The ROC Triathlon
