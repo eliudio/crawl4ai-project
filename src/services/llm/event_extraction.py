@@ -593,7 +593,7 @@ def rewrite_summary(summary: str) -> dict[str, str | None]:
 
     - summary_alt: an alternative version in genuinely original wording, not a close
       paraphrase - reduces the risk of storing/republishing another site's own copy
-      verbatim (relevant since e.g. admin/export's HTML export renders it straight
+      verbatim (relevant since e.g. admin/web's event detail view renders it straight
       into a page other people view).
     - summary_short: a further-condensed, single-sentence summary of that.
 

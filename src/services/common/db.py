@@ -14,6 +14,17 @@ from .models import Base
 engine = create_engine(settings.database_url, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
+# DDL (_add_missing_columns' ALTER TABLE, and create_all's CREATE TABLE) wants a
+# session-mode connection - Neon's pooled endpoint (settings.database_url) is a
+# transaction-mode PgBouncer, which doesn't reliably support that. Falls back to the
+# main (pooled) engine when database_url_unpooled isn't set, e.g. local Postgres, which
+# has no pooled/unpooled distinction to begin with.
+_migration_engine = (
+    create_engine(settings.database_url_unpooled, pool_pre_ping=True, future=True)
+    if settings.database_url_unpooled
+    else engine
+)
+
 
 def _add_missing_columns(engine: Engine, metadata: MetaData = Base.metadata) -> None:
     """
@@ -70,10 +81,12 @@ def init_db() -> None:
     """
     Create tables that don't exist yet, and add any column a model gained since
     its table was first created (see _add_missing_columns) - fine for phase 1;
-    switch to Alembic once the schema stabilizes.
+    switch to Alembic once the schema stabilizes. Runs against _migration_engine
+    (Neon's unpooled endpoint when configured) rather than the pooled `engine`
+    every request/worker uses - see _migration_engine's own comment above.
     """
-    Base.metadata.create_all(engine)
-    _add_missing_columns(engine)
+    Base.metadata.create_all(_migration_engine)
+    _add_missing_columns(_migration_engine)
 
 
 @contextmanager

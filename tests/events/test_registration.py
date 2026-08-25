@@ -318,7 +318,7 @@ def test_defaults_to_scheduled_when_extraction_omits_lifecycle_status(session):
 
 # ---------------------------------------------------------------------------
 # Geocoding - see geocoding_client.py. Called once per crawl, result cached
-# on the row, priority order matches admin/export's html_export._render_map.
+# on the row, priority order matches admin/web's render._render_map.
 # ---------------------------------------------------------------------------
 
 def test_geocoding_populates_latitude_and_longitude(monkeypatch, session):

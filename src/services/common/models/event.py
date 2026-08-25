@@ -43,7 +43,7 @@ class Event(Base):
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     # AI-rewritten alternative wording of `summary` above (see
     # llm/event_extraction.rewrite_summary) - genuinely reworded, not a close paraphrase,
-    # so what gets stored/republished (e.g. admin/export's HTML export) never has to be
+    # so what gets stored/republished (e.g. admin/web's event detail view) never has to be
     # another site's own copy verbatim.
     summary_alt: Mapped[str | None] = mapped_column(Text, nullable=True)
     # AI-condensed single-sentence summary of `summary` above (see llm/event_extraction.rewrite_summary).
@@ -158,7 +158,7 @@ class Event(Base):
     occurrence_ends_on: Mapped[date | None] = mapped_column(Date, nullable=True)
 
     # Geocoded from start_location (falling back to location, then finish_location -
-    # same priority admin/export's html_export._render_map already uses) via
+    # same priority admin/web's render._render_map already uses) via
     # events/geocoding_client.py, once per crawl - never looked up at query time. Null
     # until a crawl has actually attempted geocoding (or attempted and found nothing) -
     # there's no third "not yet tried" state distinct from "tried, no result", since

@@ -1,0 +1,13 @@
+# Deps for the admin web interface only (services.admin.web.app) - see
+# Dockerfile.admin. Deliberately not requirements.txt: this service never
+# scrapes or calls an LLM, so it skips firecrawl-py/crawl4ai (and the Playwright
+# browser install that comes with it), openai, anthropic, and tenacity entirely.
+# google-cloud-pubsub is still needed even though this service never publishes -
+# services.common's __init__ imports pubsub_client unconditionally.
+sqlalchemy>=2.0.36,<3.0.0
+psycopg[binary]>=3.2.3,<4.0.0
+google-cloud-pubsub>=2.27.0,<3.0.0
+fastapi>=0.115.6,<1.0.0
+uvicorn>=0.34.0,<1.0.0
+pydantic-settings>=2.7.0,<3.0.0
+markdown>=3.10.3,<4.0.0

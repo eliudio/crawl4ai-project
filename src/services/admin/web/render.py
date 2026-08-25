@@ -1,47 +1,42 @@
 """
-Renders the `events` table as three self-contained HTML files, for browsing
-what the pipeline has collected without needing `psql` open - see
-csv_export.py for the flat-CSV equivalent, whose _fetch_rows is this
-module's own query-building seam too (called via the `csv_export` module
-object, not a bare imported name, so tests can monkeypatch
-`csv_export._fetch_rows` and have it take effect here as well).
+Renders the `events` table as browsable HTML, on the fly, per request - the
+live equivalent of the old admin/export scripts (see ARCHITECTURE.md's "Admin
+interface" section). Every function here is pure (rows/organisers in, an HTML
+string out) - no database access and no file I/O, so these are unit-testable
+with plain hand-built model instances (see tests/admin/web/test_render.py);
+app.py is the only thing that calls queries.py and feeds its result into these.
 
-All three render an expand/collapse tree using plain <details>/<summary> (no
-JS needed), just grouped/filtered differently:
-- events_per_organiser.html: every VALID event, organiser -> its events ->
-  each event's full detail, plus a Google Maps link and embedded map per
-  event where a location is known.
-- events_per_event_type.html: every VALID event, sport -> standardised race
-  type (see race_types.py - "marathon", "10_k", "10_m", ...) -> the events
-  offering that distance, for browsing "show me every marathon" rather than
-  per-organiser. A distance with no resolved race type (see
-  EventDistance.race_type_id) still shows up, grouped under "uncategorised".
-- events_invalid.html: every INVALID event (see EventStatus - a crawled URL
-  that turned out to be a redirect notice, dead page, etc. with no real event
-  content), organiser -> events, same detail view as events_per_organiser.html
-  - for debugging what the LLM flagged as invalid and why, without wading
-  through every genuinely valid event to find them.
+Three tree views, same grouping the old exports used, just built from
+whatever rows app.py already filtered by organiser/status/search instead of
+one fixed file per view:
+- render_organiser_tree(): organiser -> its events -> each event's full
+  detail, plus a Google Maps link and embedded map per event where a location
+  is known. Used for both /events (VALID) and /events/invalid (INVALID) -
+  which one just changes the title/rows passed in, not the rendering itself.
+- render_event_type_tree(): sport -> standardised race type (see
+  race_types.py - "marathon", "10_k", "10_m", ...) -> the events offering
+  that distance, for /events/by-type. A distance with no resolved race type
+  (see EventDistance.race_type_id) still shows up, grouped under
+  "uncategorised".
+- render_index(): landing page - organiser list with event counts, each
+  linking into a pre-filtered /events?organiser_id=... view.
 """
 
 import html
 from datetime import datetime
 from enum import Enum as PyEnum
-from pathlib import Path
 from urllib.parse import quote_plus
 
 import markdown
 
-from services.common.db import session_scope
 from services.common.models import Event, EventDistance, EventLifecycle, EventStatus
 
-from . import csv_export
-
-__all__ = ["export_events_per_organiser", "export_invalid_events", "export_events_per_event_type"]
+__all__ = ["render_index", "render_organiser_tree", "render_event_type_tree", "CSS"]
 
 _UNCATEGORISED_SPORT = "uncategorised"
 _UNCATEGORISED_LABEL = "(uncategorised)"
 
-# Fields shown in the HTML event detail tree, in display order. Distances/occurrences are
+# Fields shown in the event detail tree, in display order. Distances/occurrences are
 # rendered separately (see _render_distances/_render_occurrences) since they're lists, not
 # a single scalar value. Status/lifecycle_status are rendered separately too (see
 # _render_event's INVALID/CANCELLED/POSTPONED badges and their own conditional detail
@@ -171,9 +166,9 @@ def _render_page_content(event: Event) -> str:
 def _render_event(event: Event, organiser_name: str | None = None) -> str:
     """
     Renders one event's full detail block - fields table, distances, map, raw
-    page content. Shared by both HTML exports: events_per_organiser.html calls
-    this with no organiser_name (it's already the enclosing group there);
-    events_per_event_type.html passes it, since an event's organiser isn't
+    page content. Shared by every tree view: render_organiser_tree calls this
+    with no organiser_name (it's already the enclosing group there);
+    render_event_type_tree passes it, since an event's organiser isn't
     otherwise implied by "grouped under this distance".
     """
     name = html.escape(event.name or f"(untitled event #{event.id})")
@@ -230,17 +225,17 @@ def _render_organiser(organiser_id: int, organiser_name: str, events: list[Event
     name = html.escape(organiser_name)
     events_html = "".join(_render_event(e) for e in events)
     return f"""
-      <details class="organiser">
+      <details class="organiser" open>
         <summary>{name} <span class="org-id">(ID {organiser_id})</span> <span class="count">({len(events)} event{"s" if len(events) != 1 else ""})</span></summary>
         <div class="events">{events_html}</div>
       </details>"""
 
 
 def _render_distance_group(label: str, entries: list[tuple[Event, str, EventDistance]]) -> str:
-    # Reuses _render_event (same function events_per_organiser.html renders with) rather
-    # than a second, parallel "what does an event look like" renderer - each entry's
-    # distance itself isn't singled out here since _render_event's own distances table
-    # already shows all of that event's distances, this one included.
+    # Reuses _render_event (same function render_organiser_tree renders with) rather than a
+    # second, parallel "what does an event look like" renderer - each entry's distance itself
+    # isn't singled out here since _render_event's own distances table already shows all of
+    # that event's distances, this one included.
     events_html = "".join(_render_event(event, organiser_name) for event, organiser_name, _distance in entries)
     return f"""
       <details class="distance">
@@ -255,13 +250,13 @@ def _render_sport(sport_label: str, distances_by_label: dict[str, list]) -> str:
         _render_distance_group(label, entries) for label, entries in sorted(distances_by_label.items())
     )
     return f"""
-      <details class="sport">
+      <details class="sport" open>
         <summary>{html.escape(sport_label)} <span class="count">({total} event{"s" if total != 1 else ""} across {len(distances_by_label)} distance{"s" if len(distances_by_label) != 1 else ""})</span></summary>
         <div class="distances-by-sport">{distances_html}</div>
       </details>"""
 
 
-_CSS = """
+CSS = """
   :root {
     color-scheme: light dark;
     --bg: #f7f7f9;
@@ -282,7 +277,67 @@ _CSS = """
     line-height: 1.45;
   }
   h1 { margin-bottom: 0.1rem; }
-  .meta { color: var(--muted); margin-top: 0; margin-bottom: 2rem; font-size: 0.9rem; }
+  .meta { color: var(--muted); margin-top: 0; margin-bottom: 1.2rem; font-size: 0.9rem; }
+
+  nav.admin-nav {
+    display: flex;
+    gap: 1.2rem;
+    margin-bottom: 1.2rem;
+    padding-bottom: 0.8rem;
+    border-bottom: 1px solid var(--border);
+  }
+  nav.admin-nav a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.92rem;
+    font-weight: 500;
+  }
+  nav.admin-nav a:hover { color: var(--accent); }
+  nav.admin-nav a.active { color: var(--accent); }
+
+  form.filter-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    padding: 0.75rem 1rem;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  form.filter-form input {
+    padding: 0.35rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 0.9rem;
+  }
+  form.filter-form input[name="q"] { flex: 1; min-width: 12rem; }
+  form.filter-form input[name="organiser_id"] { width: 8rem; }
+  form.filter-form button {
+    padding: 0.35rem 0.9rem;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+  form.filter-form a.clear-filters { color: var(--muted); font-size: 0.85rem; text-decoration: none; }
+  form.filter-form a.clear-filters:hover { text-decoration: underline; }
+
+  table.organisers { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+  table.organisers th, table.organisers td {
+    text-align: left;
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.92rem;
+  }
+  table.organisers th { color: var(--muted); font-weight: 500; }
+  table.organisers a { color: var(--accent); text-decoration: none; }
+  table.organisers a:hover { text-decoration: underline; }
 
   details { margin: 0.4rem 0; }
   summary {
@@ -463,123 +518,127 @@ _CSS = """
   }
 """
 
-# Shared by all three HTML exports - a plain sibling file next to whichever html
-# output_path is currently being written (see _write_css), rather than inlined into
-# every <style> block. All three normally land in the same directory
-# (cli.DEFAULT_OUTPUT), so this ends up written once and just re-read by the browser for
-# each; --output/--output-by-type/--output-invalid pointing elsewhere still each get
-# their own copy alongside them, since a <link> is only ever relative to its own file.
-_CSS_FILENAME = "events_style.css"
+_NAV_ITEMS = [
+    ("/", "Organisers"),
+    ("/events", "Events"),
+    ("/events/by-type", "By race type"),
+    ("/events/invalid", "Invalid"),
+]
 
 
-def _write_css(output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / _CSS_FILENAME).write_text(_CSS, encoding="utf-8")
-
-
-def _export_organiser_tree(output_path: Path, organiser_id: int | None, status: EventStatus | None, title: str) -> int:
-    """
-    Shared by export_events_per_organiser (VALID events, the normal export) and
-    export_invalid_events (INVALID events, for debugging what the LLM flagged and why)
-    - same organiser -> events -> details tree either way, just filtered to a different
-    status and titled differently. Returns the event count.
-    """
-    with session_scope() as session:
-        rows = csv_export._fetch_rows(session, organiser_id, status=status)
-
-        # Group in Python (rather than a GROUP BY query) - session_scope's connection is
-        # closed by the time we render, and we need the full Event objects, not aggregates.
-        grouped: dict[int, dict] = {}
-        for event, organiser_name in rows:
-            group = grouped.setdefault(event.organiser_id, {"name": organiser_name, "events": []})
-            group["events"].append(event)
-
-    _write_css(output_path.parent)
-
-    total = sum(len(g["events"]) for g in grouped.values())
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-    organisers_html = "".join(
-        _render_organiser(organiser_id, g["name"], g["events"]) for organiser_id, g in grouped.items()
+def _render_nav(active_path: str) -> str:
+    links = "".join(
+        f'<a href="{path}"{" class=\"active\"" if path == active_path else ""}>{html.escape(label)}</a>'
+        for path, label in _NAV_ITEMS
     )
+    return f'<nav class="admin-nav">{links}</nav>'
 
-    doc = f"""<!DOCTYPE html>
+
+def _render_filter_form(action: str, *, organiser_id: int | None, search: str | None = None, show_search: bool) -> str:
+    search_input = (
+        f'<input type="text" name="q" placeholder="Search name / organiser / location" value="{html.escape(search or "")}">'
+        if show_search
+        else ""
+    )
+    organiser_value = html.escape(str(organiser_id)) if organiser_id is not None else ""
+    clear = f'<a class="clear-filters" href="{action}">Clear</a>' if (organiser_id or search) else ""
+    return f"""
+    <form method="get" action="{action}" class="filter-form">
+      {search_input}
+      <input type="number" name="organiser_id" placeholder="Organiser ID" value="{organiser_value}">
+      <button type="submit">Filter</button>
+      {clear}
+    </form>"""
+
+
+def _page_shell(*, active_path: str, title: str, meta: str, body: str) -> str:
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>{html.escape(title)}</title>
-<link rel="stylesheet" href="{_CSS_FILENAME}">
+<style>{CSS}</style>
 </head>
 <body>
+  {_render_nav(active_path)}
   <h1>{html.escape(title)}</h1>
-  <p class="meta">{total} event(s) across {len(grouped)} organiser(s) &middot; generated {generated_at}</p>
-  {organisers_html}
+  <p class="meta">{meta} &middot; generated {generated_at}</p>
+  {body}
 </body>
 </html>
 """
-    output_path.write_text(doc, encoding="utf-8")
-    print(f"wrote {total} event(s) across {len(grouped)} organiser(s) to {output_path}")
-    return total
 
 
-def export_events_per_organiser(output_path: Path, organiser_id: int | None = None) -> int:
-    """Writes the organiser -> events -> details tree to a single HTML file (VALID events only). Returns the event count."""
-    return _export_organiser_tree(output_path, organiser_id, EventStatus.VALID, "Events per organiser")
+def render_index(organisers: list[tuple[int, str, int]]) -> str:
+    """Landing page: every organiser with its VALID event count, each linking into a
+    pre-filtered /events?organiser_id=... view - the natural starting point for browsing,
+    rather than dropping straight into one huge unfiltered tree."""
+    total_events = sum(count for _id, _name, count in organisers)
+    rows = "".join(
+        f'<tr><td>{org_id}</td><td><a href="/events?organiser_id={org_id}">{html.escape(name)}</a></td>'
+        f'<td>{count}</td></tr>'
+        for org_id, name, count in organisers
+    )
+    body = f"""
+    <table class="organisers">
+      <thead><tr><th>ID</th><th>Organiser</th><th>Events</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>"""
+    meta = f"{len(organisers)} organiser(s), {total_events} valid event(s) total"
+    return _page_shell(active_path="/", title="Organisers", meta=meta, body=body)
 
 
-def export_invalid_events(output_path: Path, organiser_id: int | None = None) -> int:
-    """
-    Writes the organiser -> events -> details tree for INVALID events only (see
-    EventStatus - a crawled URL that turned out to be a redirect notice, dead page, etc.
-    with no real event content). Useful for debugging what the LLM flagged as invalid and
-    why (each event's "Invalid reason" row/badge - see _render_event) without wading
-    through every genuinely valid event to find them. Returns the event count.
-    """
-    return _export_organiser_tree(output_path, organiser_id, EventStatus.INVALID, "Invalid events")
+def _group_by_organiser(rows: list[tuple[Event, str]]) -> dict[int, dict]:
+    grouped: dict[int, dict] = {}
+    for event, organiser_name in rows:
+        group = grouped.setdefault(event.organiser_id, {"name": organiser_name, "events": []})
+        group["events"].append(event)
+    return grouped
 
 
-def export_events_per_event_type(output_path: Path, organiser_id: int | None = None) -> int:
-    """
-    Writes the sport -> race type -> events tree to a single HTML file (see
-    race_types.py for how each distance resolves to a standardised race type -
-    "marathon", "10_k", "10_m", etc). A distance with no resolved race type
-    still appears, grouped under "uncategorised" rather than silently dropped.
-    Returns the number of (event, distance) entries written.
-    """
-    with session_scope() as session:
-        rows = csv_export._fetch_rows(session, organiser_id)
+def render_organiser_tree(
+    rows: list[tuple[Event, str]],
+    *,
+    title: str,
+    active_path: str,
+    organiser_id: int | None = None,
+    search: str | None = None,
+) -> str:
+    """Organiser -> events -> details tree - used for both /events (VALID rows) and
+    /events/invalid (INVALID rows); which one this is is entirely down to what `rows`
+    app.py already fetched, not anything decided in here."""
+    grouped = _group_by_organiser(rows)
+    total = sum(len(g["events"]) for g in grouped.values())
+    organisers_html = "".join(
+        _render_organiser(org_id, g["name"], g["events"]) for org_id, g in grouped.items()
+    )
+    filter_form = _render_filter_form(active_path, organiser_id=organiser_id, search=search, show_search=True)
+    meta = f"{total} event(s) across {len(grouped)} organiser(s)"
+    return _page_shell(active_path=active_path, title=title, meta=meta, body=filter_form + organisers_html)
 
-        # sport label -> race type label -> [(event, organiser_name, distance), ...]
-        grouped: dict[str, dict[str, list[tuple[Event, str, EventDistance]]]] = {}
-        for event, organiser_name in rows:
-            for d in event.distances:
-                if d.race_type:
-                    sport_label = d.race_type.sport.value
-                    type_label = d.race_type.label
-                else:
-                    sport_label = _UNCATEGORISED_SPORT
-                    type_label = _UNCATEGORISED_LABEL
-                grouped.setdefault(sport_label, {}).setdefault(type_label, []).append((event, organiser_name, d))
 
-    _write_css(output_path.parent)
+def render_event_type_tree(rows: list[tuple[Event, str]], *, organiser_id: int | None = None) -> str:
+    """Sport -> race type -> events tree (see race_types.py for how each distance resolves
+    to a standardised race type - "marathon", "10_k", "10_m", etc). A distance with no
+    resolved race type still appears, grouped under "uncategorised" rather than silently
+    dropped."""
+    # sport label -> race type label -> [(event, organiser_name, distance), ...]
+    grouped: dict[str, dict[str, list[tuple[Event, str, EventDistance]]]] = {}
+    for event, organiser_name in rows:
+        for d in event.distances:
+            if d.race_type:
+                sport_label = d.race_type.sport.value
+                type_label = d.race_type.label
+            else:
+                sport_label = _UNCATEGORISED_SPORT
+                type_label = _UNCATEGORISED_LABEL
+            grouped.setdefault(sport_label, {}).setdefault(type_label, []).append((event, organiser_name, d))
 
     total = sum(len(entries) for distances in grouped.values() for entries in distances.values())
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     sports_html = "".join(_render_sport(sport, distances) for sport, distances in sorted(grouped.items()))
-
-    doc = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Events per race type</title>
-<link rel="stylesheet" href="{_CSS_FILENAME}">
-</head>
-<body>
-  <h1>Events per race type</h1>
-  <p class="meta">{total} distance entr{"y" if total == 1 else "ies"} across {len(grouped)} sport(s) &middot; generated {generated_at}</p>
-  {sports_html}
-</body>
-</html>
-"""
-    output_path.write_text(doc, encoding="utf-8")
-    print(f"wrote {total} distance entries across {len(grouped)} sport(s) to {output_path}")
-    return total
+    filter_form = _render_filter_form("/events/by-type", organiser_id=organiser_id, show_search=False)
+    meta = f"{total} distance entr{'y' if total == 1 else 'ies'} across {len(grouped)} sport(s)"
+    return _page_shell(
+        active_path="/events/by-type", title="Events per race type", meta=meta, body=filter_form + sports_html
+    )

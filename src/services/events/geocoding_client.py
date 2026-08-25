@@ -93,7 +93,7 @@ def geocode_event_location(
 ) -> tuple[float, float] | None:
     """
     Geocodes whichever of an event's three location fields is usable, in the same
-    priority order admin/export's html_export._render_map already uses (location,
+    priority order admin/web's render._render_map already uses (location,
     then start_location, then finish_location) - kept consistent with that existing
     precedent rather than inventing a new one.
 

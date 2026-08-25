@@ -1,4 +1,4 @@
-from . import export
+from . import web
 
 # discover_sitemaps deliberately NOT re-exported here: its own module and its one
 # function share the name "discover_sitemaps" - re-exporting the function under
@@ -9,4 +9,4 @@ from . import export
 # discover_sitemaps`) when you need the module, e.g. to monkeypatch it in a test.
 from .seed_organisers import seed_from_csv
 
-__all__ = ["seed_from_csv", "export"]
+__all__ = ["seed_from_csv", "web"]

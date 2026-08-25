@@ -20,9 +20,20 @@ class Settings(BaseSettings):
     )
 
     # --- Storage ---
-    # Postgres (Cloud SQL in production). Example:
-    # postgresql+psycopg://user:password@127.0.0.1:5432/events
+    # Postgres, hosted on Neon (serverless Postgres - see ARCHITECTURE.md's "Database"
+    # section). This is Neon's *pooled* connection string (host has a "-pooler" suffix) -
+    # what the crawler workers and the admin web interface should both use, since both are
+    # bursty/many-short-lived-connections workloads, exactly what Neon's PgBouncer-style
+    # pooler is for. sslmode=require because Neon requires TLS. Example (see the Neon
+    # dashboard's "Connect" panel for the real host/user/password/dbname):
+    # postgresql+psycopg://user:password@ep-xxx-pooler.region.aws.neon.tech/events?sslmode=require
+    # Defaults to a plain local Postgres for local dev without a Neon project at all.
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/events"
+    # Neon's *unpooled* connection string (same host, minus "-pooler") - only used for
+    # session-mode DDL (common/db.py's _add_missing_columns() runs ALTER TABLE, which
+    # doesn't reliably work through a transaction-mode pooler). Leave unset for local
+    # Postgres (no pooled/unpooled distinction there) - db.py falls back to database_url.
+    database_url_unpooled: str | None = None
 
     # --- Firecrawl ---
     firecrawl_api_key: str | None = None
@@ -66,6 +77,14 @@ class Settings(BaseSettings):
     # "firecrawl": skip crawl4ai entirely and always use Firecrawl - an escape hatch to
     # roll back instantly (e.g. self-hosting turns out unreliable) without a code change.
     scraper_backend: str = "crawl4ai"
+
+    # --- Admin web interface (see admin/web/app.py) ---
+    # Optional HTTP Basic gate - enforced only when BOTH are set (see app.py's
+    # _require_auth). This is a second layer, not a replacement for, restricting who can
+    # invoke the Cloud Run service in the first place (see INSTALLATION.md) - the admin
+    # interface is a raw view over the full database and was never meant to be public.
+    admin_basic_auth_user: str | None = None
+    admin_basic_auth_password: str | None = None
 
 
 settings = Settings()

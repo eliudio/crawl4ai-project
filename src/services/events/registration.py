@@ -84,7 +84,7 @@ def apply_fields(session: Session, event: Event, fields: dict, registrator: str)
         # See llm.rewrite_summary - a second, cheap LLM call producing an alternative,
         # genuinely reworded version (summary_alt) plus a further-condensed one-sentence
         # version of it (summary_short). Kept alongside the original rather than
-        # replacing it - see admin/export, which shows all three. Only called when
+        # replacing it - see admin/web, which shows all three. Only called when
         # there's actually a summary to work with - nothing to rewrite or condense
         # otherwise (e.g. an invalid/no-content page never gets one).
         rewritten = rewrite_summary(event.summary)

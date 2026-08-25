@@ -30,30 +30,18 @@ the two have different audiences, auth models, and scaling profiles. This is
 a prerequisite for every user-facing item in the "functionality" section
 below (community edits, booking, moderation all need somewhere to live).
 
-### A2. Adopt Neon as the Postgres provider
+### A2. Adopt Neon as the Postgres provider — done
 
-`ARCHITECTURE.md` now specifies Neon (serverless Postgres) as the database.
-The code currently documents and defaults to a generic/self-hosted-style
-Postgres URL:
-
-- `common/config.py`'s `database_url` setting is documented as *"Postgres
-  (Cloud SQL in production)"* with a plain local-Postgres example
-  (`common/config.py:22-25`) — needs updating to Neon, including:
-  - Using Neon's pooled connection endpoint (PgBouncer-compatible) for the
-    crawler workers and any future API tier, since both are bursty/
-    many-short-lived-connections workloads — exactly what Neon's pooler is
-    for, and what `ARCHITECTURE.md` now calls out.
-  - `sslmode=require` (Neon requires TLS) in the example connection string.
-  - Deciding whether admin/export scripts (`admin/export/cli.py`) and
-    `common/db.py`'s `_add_missing_columns()` DDL migrations need the
-    *unpooled* Neon connection string instead (session-mode operations like
-    `ALTER TABLE` don't always play well through a transaction-mode pooler) —
-    if so, add a second settings field (e.g. `database_url_unpooled`) rather
-    than overloading one URL for both uses.
-- No deployment docs/config in the repo yet reference Neon at all (project
-  creation, branch-per-environment strategy, where the connection string(s)
-  come from at deploy time) — needs adding wherever Cloud Run's own env vars
-  are documented/set.
+`ARCHITECTURE.md` specifies Neon (serverless Postgres) as the database.
+`common/config.py`'s `database_url` now documents and defaults to the Neon
+shape (pooled endpoint, `sslmode=require`), with a second field,
+`database_url_unpooled`, added for `common/db.py`'s `_add_missing_columns()`/
+`create_all()` DDL (session-mode operations that don't reliably work through
+Neon's transaction-mode pooler) — falls back to `database_url` when unset
+(plain local Postgres has no pooled/unpooled distinction). The admin web
+interface (`admin/web/`) uses the same pooled `database_url` as the crawler
+workers, per the read-only/bursty reasoning above. Deployment docs now exist —
+see `INSTALLATION.md`.
 
 ### A3. Add the attribution/versioning schema the crowd-sourcing tier depends on
 
